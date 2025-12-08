@@ -1,0 +1,70 @@
+# Algamol Configuration File
+# Scientific Literature Collection and Management System
+
+# Data storage directory (relative or absolute path)
+data_dir: "./data"
+
+# Database configuration
+database:
+  path: "./data/algamol.db"
+
+# Enabled sources and their priority
+sources:
+  pubmed:
+    enabled: true
+    tier: 1
+    rate_limit_per_second: 3
+    email: "your-email@example.com"  # Required by NCBI for rate limiting
+
+  crossref:
+    enabled: true
+    tier: 1
+    rate_limit_per_second: 50
+    mailto: "your-email@example.com"  # Polite pool access
+
+  arxiv:
+    enabled: true
+    tier: 2
+    rate_limit_per_second: 1
+
+  openalex:
+    enabled: true
+    tier: 1
+    rate_limit_per_second: 10
+    email: "your-email@example.com"  # Polite pool access
+
+  europepmc:
+    enabled: true
+    tier: 1
+    rate_limit_per_second: 5
+
+# PDF retrieval settings
+pdf_retrieval:
+  enabled: true
+  unpaywall_email: "your-email@example.com"  # Required for Unpaywall API
+  timeout_seconds: 30
+  max_file_size_mb: 50
+  user_agent: "Algamol/1.0 (Scientific Literature Manager; mailto:your-email@example.com)"
+
+# Search defaults
+search_defaults:
+  max_results_per_source: 100
+  year_range_start: 2000
+  year_range_end: 2025
+  include_tier_3: false
+
+# Retry and backoff settings
+retry:
+  max_attempts: 3
+  initial_wait_seconds: 2
+  max_wait_seconds: 16
+
+# Logging
+logging:
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR
+  file: "./data/algamol.log"
+
+# API server settings
+api:
+  host: "127.0.0.1"
+  port: 8000

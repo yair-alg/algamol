@@ -1,0 +1,14 @@
+# Example list of paper identifiers for testing
+# One identifier per line, supports DOI, PMID, arXiv ID
+
+# DOIs
+10.1038/nature12373
+10.1126/science.1260419
+
+# PubMed IDs
+25760607
+24336571
+
+# arXiv IDs
+1706.03762
+2010.11929
