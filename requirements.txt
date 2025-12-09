@@ -26,3 +26,4 @@ pypdf>=3.17.0
 # Utilities
 python-slugify>=8.0.0
 tenacity>=8.2.0
+pytest>=7.4.0

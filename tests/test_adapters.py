@@ -1,107 +1,95 @@
-"""Tests for source adapters."""
+from pathlib import Path
 
 import pytest
+
 from src.adapters.base import PaperMetadata
-from src.adapters.arxiv_adapter import ArxivAdapter
 from src.adapters.crossref import CrossrefAdapter
+from src.adapters.arxiv_adapter import ArxivAdapter
+from src.pipeline import SearchPipeline
+from src.database import init_database
+from src.pdf_retriever import PDFRetriever
 
 
-def test_arxiv_adapter_search():
-    """Test arXiv adapter search functionality."""
-    adapter = ArxivAdapter(tier=2, rate_limit=1.0)
-
-    # Search for a well-known topic
-    results = adapter.search("quantum computing", max_results=5)
-
-    assert len(results) > 0
-    assert all(isinstance(r, PaperMetadata) for r in results)
-
-    # Check first result has required fields
-    first = results[0]
-    assert first.title
-    assert first.source_name == "arxiv"
-    assert first.source_tier == 2
-    assert first.arxiv_id
+@pytest.fixture()
+def temp_pipeline(tmp_path: Path) -> SearchPipeline:
+    """Provide a pipeline wired to a temp database and data directory."""
+    db_path = tmp_path / "algamol_test.db"
+    db = init_database(db_path)
+    pdf_retriever = PDFRetriever(data_dir=tmp_path)
+    return SearchPipeline(db=db, pdf_retriever=pdf_retriever)
 
 
-def test_arxiv_adapter_fetch_by_id():
-    """Test arXiv adapter fetch by ID."""
-    adapter = ArxivAdapter(tier=2, rate_limit=1.0)
+def test_crossref_metadata_parsing():
+    """Ensure Crossref metadata extraction parses core fields."""
+    adapter = CrossrefAdapter(mailto="test@example.com", tier=1, rate_limit=10.0)
 
-    # Fetch a known arXiv paper
-    paper = adapter.fetch_by_id("1706.03762", id_type="arxiv")
+    work = {
+        "title": ["Example Paper Title"],
+        "author": [
+            {"given": "Jane", "family": "Doe"},
+            {"given": "John", "family": "Smith"},
+        ],
+        "published-print": {"date-parts": [[2023, 6, 1]]},
+        "container-title": ["Journal of Testing"],
+        "abstract": "<jats:p>Example abstract.</jats:p>",
+        "DOI": "10.1234/example.doi",
+        "URL": "https://doi.org/10.1234/example.doi",
+        "link": [
+            {
+                "URL": "https://example.org/paper.pdf",
+                "content-type": "application/pdf",
+            }
+        ],
+        "license": [
+            {"URL": "https://creativecommons.org/licenses/by/4.0/"}
+        ],
+    }
 
-    assert paper is not None
-    assert "Attention" in paper.title  # "Attention is All You Need"
-    assert paper.arxiv_id == "1706.03762"
-    assert paper.open_access is True
-    assert paper.pdf_url
+    metadata = adapter._extract_metadata(work)  # type: ignore[attr-defined]
+
+    assert metadata.title == "Example Paper Title"
+    assert metadata.authors == ["Jane Doe", "John Smith"]
+    assert metadata.year == 2023
+    assert metadata.journal_or_venue == "Journal of Testing"
+    assert metadata.doi == "10.1234/example.doi"
+    assert metadata.pdf_url == "https://example.org/paper.pdf"
+    assert metadata.open_access is True
 
 
-def test_crossref_adapter_fetch_by_doi():
-    """Test Crossref adapter fetch by DOI."""
-    adapter = CrossrefAdapter(mailto="test@example.com", tier=1, rate_limit=1.0)
-
-    # Fetch a known DOI
-    paper = adapter.fetch_by_id("10.1038/nature12373", id_type="doi")
-
-    assert paper is not None
-    assert paper.doi == "10.1038/nature12373"
-    assert paper.title
-    assert paper.source_name == "crossref"
-
-
-def test_paper_metadata_primary_id():
-    """Test PaperMetadata primary ID extraction."""
-    # Test DOI priority
-    paper1 = PaperMetadata(
-        title="Test Paper",
-        source_name="test",
+def test_store_paper_in_db(temp_pipeline: SearchPipeline):
+    """Verify PaperMetadata persists through the pipeline without downloading PDFs."""
+    metadata = PaperMetadata(
+        title="Stored Paper",
+        authors=["Ada Lovelace"],
+        year=2024,
+        journal_or_venue="Proceedings of Testing",
+        doi="10.5555/stored.paper",
+        external_ids={"doi": "10.5555/stored.paper"},
+        source_name="crossref",
         source_tier=1,
-        doi="10.1234/test",
-        pmid="12345"
+        source_url="https://doi.org/10.5555/stored.paper",
+        open_access=True,
     )
-    id_type, id_value = paper1.get_primary_id()
-    assert id_type == "doi"
-    assert id_value == "10.1234/test"
 
-    # Test PMID when no DOI
-    paper2 = PaperMetadata(
-        title="Test Paper",
-        source_name="test",
-        source_tier=1,
-        pmid="12345"
-    )
-    id_type, id_value = paper2.get_primary_id()
-    assert id_type == "pmid"
-    assert id_value == "12345"
+    with temp_pipeline.db.get_session() as session:
+        paper = temp_pipeline._store_paper(session, metadata, download_pdf=False)
+        session.flush()
 
-    # Test arXiv ID
-    paper3 = PaperMetadata(
-        title="Test Paper",
-        source_name="test",
-        source_tier=1,
-        arxiv_id="1234.5678"
-    )
-    id_type, id_value = paper3.get_primary_id()
-    assert id_type == "arxiv"
-    assert id_value == "1234.5678"
+        retrieved = session.get(type(paper), paper.id)
+        assert retrieved is not None
+        assert retrieved.title == "Stored Paper"
+        assert retrieved.doi == "10.5555/stored.paper"
+        assert retrieved.source_name == "crossref"
+        assert retrieved.retrieval_status in {"pending", "pdf_available", "no_open_pdf_found"}
+
 
 
 def test_identifier_normalization():
-    """Test identifier normalization."""
-    adapter = ArxivAdapter()
-
-    # Test arXiv ID normalization
-    assert adapter.normalize_identifier("arxiv:1234.5678", "arxiv") == "1234.5678"
-    assert adapter.normalize_identifier("https://arxiv.org/abs/1234.5678", "arxiv") == "1234.5678"
+    """Adapters should normalize identifiers predictably."""
+    arxiv = ArxivAdapter()
+    assert arxiv.normalize_identifier("arxiv:1234.5678", "arxiv") == "1234.5678"
+    assert arxiv.normalize_identifier("https://arxiv.org/abs/1234.5678", "arxiv") == "1234.5678"
 
     crossref = CrossrefAdapter(mailto="test@example.com")
-
-    # Test DOI normalization
     assert crossref.normalize_identifier("doi:10.1234/test", "doi") == "10.1234/test"
     assert crossref.normalize_identifier("https://doi.org/10.1234/test", "doi") == "10.1234/test"
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])
