@@ -7,14 +7,16 @@ from src.adapters.crossref import CrossrefAdapter
 from src.adapters.arxiv_adapter import ArxivAdapter
 from src.pipeline import SearchPipeline
 from src.database import init_database
+from src.pdf_retriever import PDFRetriever
 
 
 @pytest.fixture()
-def temp_db(tmp_path: Path):
-    """Initialize a temporary database for isolated tests."""
+def temp_pipeline(tmp_path: Path) -> SearchPipeline:
+    """Provide a pipeline wired to a temp database and data directory."""
     db_path = tmp_path / "algamol_test.db"
-    init_database(db_path)
-    return db_path
+    db = init_database(db_path)
+    pdf_retriever = PDFRetriever(data_dir=tmp_path)
+    return SearchPipeline(db=db, pdf_retriever=pdf_retriever)
 
 
 def test_crossref_metadata_parsing():
@@ -54,10 +56,8 @@ def test_crossref_metadata_parsing():
     assert metadata.open_access is True
 
 
-def test_store_paper_in_db(temp_db: Path):
+def test_store_paper_in_db(temp_pipeline: SearchPipeline):
     """Verify PaperMetadata persists through the pipeline without downloading PDFs."""
-    pipeline = SearchPipeline()
-
     metadata = PaperMetadata(
         title="Stored Paper",
         authors=["Ada Lovelace"],
@@ -71,8 +71,8 @@ def test_store_paper_in_db(temp_db: Path):
         open_access=True,
     )
 
-    with pipeline.db.get_session() as session:
-        paper = pipeline._store_paper(session, metadata, download_pdf=False)
+    with temp_pipeline.db.get_session() as session:
+        paper = temp_pipeline._store_paper(session, metadata, download_pdf=False)
         session.flush()
 
         retrieved = session.get(type(paper), paper.id)

@@ -5,8 +5,8 @@ from typing import List, Optional, Dict, Any, Set
 from datetime import datetime
 from sqlalchemy.orm import Session
 
-from src.config import get_config, SourceConfig
-from src.database import get_db
+from src.config import get_config, SourceConfig, Config
+from src.database import get_db, Database
 from src.models import Paper, File, Query, QueryResult
 from src.adapters import (
     SourceAdapter, PaperMetadata,
@@ -21,11 +21,24 @@ logger = logging.getLogger(__name__)
 class SearchPipeline:
     """Orchestrates paper search, deduplication, and storage."""
 
-    def __init__(self):
-        """Initialize the search pipeline."""
-        self.config = get_config()
-        self.db = get_db()
-        self.pdf_retriever = PDFRetriever()
+    def __init__(
+        self,
+        config: Optional[Config] = None,
+        db: Optional[Database] = None,
+        pdf_retriever: Optional[PDFRetriever] = None,
+    ):
+        """Initialize the search pipeline.
+
+        Dependency injection is supported to simplify testing and
+        allow callers to provide pre-configured database instances
+        or alternative PDF storage locations.
+        """
+
+        self.config = config or get_config()
+        self.db = db or get_db()
+        self.pdf_retriever = pdf_retriever or PDFRetriever(
+            data_dir=self.config.get_data_dir()
+        )
         self.adapters: Dict[str, SourceAdapter] = {}
         self._init_adapters()
 
