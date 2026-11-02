@@ -1,0 +1,1211 @@
+<!doctype html>
+<!--
+  PRESENCE OS: Daily + Weekly Operating System (single file, no backend)
+  ======================================================================
+  RUN OFFLINE
+    1. Save this file anywhere (e.g. presence-os.html).
+    2. Open it in any modern browser (double-click or File > Open). No server, no network, no libraries.
+    3. Data is stored in this browser's localStorage under the keys:
+         presenceos.daily.v1   completed DailyEntry objects
+         presenceos.weekly.v1  completed WeeklyEntry objects
+         presenceos.drafts.v1  in-progress drafts (same entry schema + current step)
+       Data is per browser and per file location. Clearing site data clears it, so export regularly.
+
+  EXPORT / IMPORT
+    Data screen (header > Data, or Home > Export/Import):
+    - Export: downloads presence-os-backup-YYYY-MM-DD.json containing
+        { app, format, exportedAt, dailyEntries[], weeklyEntries[], drafts{daily[], weekly[]} }
+    - Import: choose a backup .json.
+        Merge   = imported entries are added; same id or same date/week replaces the existing entry.
+        Replace = all current data is replaced by the file.
+    - Reset: deletes all local data (asks for confirmation).
+
+  CODE MAP (inside <script>)
+    U          utilities (dates, escaping, paths)
+    Store      storage layer (localStorage, drafts, import/export)
+    Schema     entry factories + step/field definitions (exact protocol, no extra questions)
+    Valid      validation layer (required fields, step gating, normalization)
+    Metrics    weekly metrics computation (Monday week start)
+    Insights   deterministic rule-based insights
+    Router     hash router (#/home, #/daily/:id, #/weekly/:id, #/summary/:kind/:id, #/history, #/dashboards, #/data)
+    Views      rendering
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>Presence OS</title>
+<style>
+:root{
+  color-scheme: light;
+  --bg:#f6f6f4; --surface:#fcfcfb; --surface-2:#f0efec; --border:#e2e1dc; --border-strong:#cfcec8;
+  --text:#0b0b0b; --text-2:#52514e; --muted:#76756f;
+  --accent:#2a78d6; --accent-ink:#ffffff; --accent-soft:#e3eefb;
+  --series-1:#2a78d6; --series-2:#eb6834;
+  --danger:#a8332f; --focus:#2a78d6;
+  --radius:12px; --radius-sm:8px;
+  --shadow:0 1px 2px rgba(0,0,0,.04),0 2px 8px rgba(0,0,0,.04);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    color-scheme: dark;
+    --bg:#121211; --surface:#1a1a19; --surface-2:#242422; --border:#33322f; --border-strong:#4a4945;
+    --text:#f0efec; --text-2:#c3c2b7; --muted:#9a998f;
+    --accent:#3987e5; --accent-ink:#ffffff; --accent-soft:#1d2b3d;
+    --series-1:#3987e5; --series-2:#d95926;
+    --danger:#e07a76; --focus:#3987e5;
+    --shadow:none;
+  }
+}
+:root[data-theme="dark"]{
+  color-scheme: dark;
+  --bg:#121211; --surface:#1a1a19; --surface-2:#242422; --border:#33322f; --border-strong:#4a4945;
+  --text:#f0efec; --text-2:#c3c2b7; --muted:#9a998f;
+  --accent:#3987e5; --accent-ink:#ffffff; --accent-soft:#1d2b3d;
+  --series-1:#3987e5; --series-2:#d95926;
+  --danger:#e07a76; --focus:#3987e5; --shadow:none;
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;-webkit-font-smoothing:antialiased}
+a{color:var(--accent)}
+button,input,select,textarea{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+.top{position:sticky;top:0;z-index:20;background:color-mix(in srgb,var(--bg) 88%,transparent);backdrop-filter:blur(8px);border-bottom:1px solid var(--border)}
+.top-in{max-width:960px;margin:0 auto;padding:10px 16px;display:flex;align-items:center;gap:12px}
+.brand{font-weight:650;letter-spacing:-.01em;text-decoration:none;color:var(--text);white-space:nowrap}
+.brand span{color:var(--muted);font-weight:500}
+.nav{display:flex;gap:2px;margin-left:auto;overflow-x:auto}
+.nav a{padding:6px 10px;border-radius:999px;text-decoration:none;color:var(--text-2);font-size:14px;white-space:nowrap}
+.nav a.on{background:var(--surface-2);color:var(--text)}
+main{max-width:720px;margin:0 auto;padding:20px 16px 96px}
+main.wide{max-width:960px}
+h1{font-size:22px;line-height:1.25;margin:0 0 4px;letter-spacing:-.015em}
+h2{font-size:16px;margin:0 0 10px;letter-spacing:-.005em}
+h3{font-size:14px;margin:0 0 8px;color:var(--text-2);font-weight:600}
+.sub{color:var(--muted);margin:0 0 18px;font-size:14px}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:16px;margin:0 0 14px;box-shadow:var(--shadow)}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.spacer{flex:1}
+.muted{color:var(--muted)}
+.small{font-size:13px}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:42px;padding:8px 16px;border-radius:10px;border:1px solid var(--border-strong);background:var(--surface);cursor:pointer;text-decoration:none;color:var(--text);font-weight:550;font-size:14px;transition:background .12s}
+.btn:hover:not(:disabled){background:var(--surface-2)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+.btn.primary:hover:not(:disabled){background:color-mix(in srgb,var(--accent) 88%,#000)}
+.btn.ghost{border-color:transparent;background:transparent}
+.btn.danger{color:var(--danger);border-color:color-mix(in srgb,var(--danger) 40%,var(--border))}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.btn.sm{min-height:34px;padding:4px 12px;font-size:13px}
+.actions{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}
+.actions .btn{min-height:52px;justify-content:flex-start;padding:10px 14px;text-align:left}
+.actions .btn.primary{grid-column:1/-1}
+@media(min-width:560px){.actions{grid-template-columns:repeat(3,1fr)}.actions .btn.primary{grid-column:auto}}
+.kv{display:grid;grid-template-columns:minmax(120px,40%) 1fr;gap:8px 12px;margin:0}
+.kv dt{color:var(--muted);font-size:13px;padding-top:1px}
+.kv dd{margin:0;font-weight:520;overflow-wrap:anywhere}
+.badge{display:inline-flex;align-items:center;gap:4px;padding:2px 9px;border-radius:999px;font-size:12px;font-weight:600;background:var(--surface-2);color:var(--text-2);border:1px solid var(--border);white-space:nowrap}
+.badge.full{background:var(--accent-soft);color:var(--text);border-color:transparent}
+.badge.draft{background:transparent;border-style:dashed}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--accent);display:inline-block}
+.dot.hollow{background:transparent;border:1.5px solid var(--muted)}
+/* forms */
+.field{margin:0 0 18px}
+.lbl{display:block;font-weight:600;font-size:14px;margin:0 0 6px}
+.req{color:var(--muted);margin-left:3px;font-weight:500}
+.hint{color:var(--muted);font-size:12.5px;margin:-3px 0 6px}
+input[type=text],input[type=number],input[type=time],input[type=date],input[type=search],select,textarea{width:100%;min-height:42px;padding:9px 11px;border:1px solid var(--border-strong);border-radius:var(--radius-sm);background:var(--surface);color:var(--text)}
+input[type=time],input[type=date]{max-width:220px}
+input[type=number]{max-width:160px}
+textarea{resize:vertical;min-height:64px;field-sizing:content;line-height:1.45}
+input:focus,select:focus,textarea:focus{outline:none;border-color:var(--focus);box-shadow:0 0 0 3px color-mix(in srgb,var(--focus) 22%,transparent)}
+.chips{display:flex;gap:6px;margin-top:6px;flex-wrap:wrap}
+.chip{border:1px solid var(--border-strong);background:transparent;border-radius:999px;padding:3px 10px;font-size:12.5px;color:var(--text-2);cursor:pointer;min-height:28px}
+.chip:hover{background:var(--surface-2)}
+.seg{display:flex;flex-wrap:wrap;gap:6px}
+.seg button{min-height:40px;padding:6px 14px;border-radius:999px;border:1px solid var(--border-strong);background:var(--surface);cursor:pointer;font-size:14px}
+.seg button[aria-checked=true]{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);font-weight:600}
+.seg.scale button{min-width:40px;padding:6px 0}
+.check{display:flex;align-items:center;gap:10px;min-height:44px;padding:8px 12px;border:1px solid var(--border-strong);border-radius:var(--radius-sm);cursor:pointer;font-weight:600;background:var(--surface)}
+.check input{width:20px;height:20px;accent-color:var(--accent);margin:0}
+.block{border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px;margin:0 0 10px;background:var(--surface-2)}
+.block .grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}
+.block label{font-size:12.5px;color:var(--text-2);font-weight:600;display:block;margin-bottom:4px}
+.steps{list-style:none;margin:0 0 16px;padding:0;display:flex;gap:4px;overflow-x:auto}
+.steps button{display:flex;align-items:center;gap:6px;border:1px solid var(--border);background:var(--surface);border-radius:999px;padding:5px 11px 5px 5px;font-size:12.5px;cursor:pointer;white-space:nowrap;color:var(--text-2)}
+.steps button span{display:inline-grid;place-items:center;width:22px;height:22px;border-radius:50%;background:var(--surface-2);font-weight:650;font-size:11.5px;color:var(--text-2)}
+.steps button.ok span{background:var(--accent-soft);color:var(--text)}
+.steps button.cur{border-color:var(--accent);color:var(--text);font-weight:600}
+.steps button.cur span{background:var(--accent);color:var(--accent-ink)}
+.steps button:disabled{opacity:.5;cursor:default}
+.wiz-foot{position:sticky;bottom:0;background:color-mix(in srgb,var(--bg) 92%,transparent);backdrop-filter:blur(8px);border-top:1px solid var(--border);margin:8px -16px 0;padding:10px 16px calc(10px + env(safe-area-inset-bottom))}
+.gate{font-size:12.5px;color:var(--muted);margin:0 0 8px;min-height:1em}
+.note{background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px 12px;font-size:13.5px;margin:8px 0}
+.tiles{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}
+@media(min-width:560px){.tiles{grid-template-columns:repeat(4,1fr)}}
+.tile{background:var(--surface-2);border-radius:var(--radius-sm);padding:10px 12px}
+.tile b{display:block;font-size:22px;line-height:1.2;font-variant-numeric:tabular-nums;letter-spacing:-.01em}
+.tile span{font-size:12px;color:var(--muted)}
+.tiles.big .tile b{font-size:30px}
+/* history */
+.filters{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+@media(min-width:640px){.filters{grid-template-columns:repeat(4,1fr)}}
+.filters label{font-size:12px;color:var(--muted);display:block;margin-bottom:3px}
+.filters .wide{grid-column:1/-1}
+.tabs{display:inline-flex;background:var(--surface-2);border-radius:999px;padding:3px;gap:2px;margin-bottom:12px}
+.tabs button{border:0;background:transparent;border-radius:999px;padding:6px 14px;cursor:pointer;font-size:13.5px;color:var(--text-2);min-height:34px}
+.tabs button[aria-selected=true]{background:var(--surface);color:var(--text);font-weight:600;box-shadow:var(--shadow)}
+.list{list-style:none;margin:0;padding:0}
+.item{display:block;width:100%;text-align:left;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px 14px;margin:0 0 8px;cursor:pointer;color:var(--text)}
+.item:hover{border-color:var(--border-strong)}
+.item .t{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:4px}
+.item .t strong{font-size:14.5px}
+.item p{margin:4px 0 0;color:var(--text-2);font-size:13.5px;overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+.cal{display:grid;grid-template-columns:repeat(7,1fr);gap:4px}
+.cal .dow{font-size:11.5px;color:var(--muted);text-align:center;padding:4px 0}
+.cal button{aspect-ratio:1/1;min-height:40px;border:1px solid var(--border);background:var(--surface);border-radius:8px;cursor:pointer;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;font-size:13px;padding:0;color:var(--text)}
+.cal button:disabled{opacity:.35;cursor:default}
+.cal button.today{border-color:var(--accent)}
+.cal button.dim{opacity:.4}
+.cal .mk{font-size:10px;font-weight:700;line-height:1;height:10px;display:flex;align-items:center}
+.cal .mk .h{border:1.5px solid var(--text-2);border-radius:4px;padding:0 3px;color:var(--text-2)}
+.legend{display:flex;gap:14px;flex-wrap:wrap;font-size:12.5px;color:var(--text-2);margin-top:10px;align-items:center}
+.legend span{display:inline-flex;align-items:center;gap:6px}
+/* charts */
+.charts{display:grid;grid-template-columns:1fr;gap:12px}
+@media(min-width:640px){.charts{grid-template-columns:1fr 1fr}}
+@media(min-width:900px){.charts{grid-template-columns:1fr 1fr 1fr}}
+.chart{margin:0;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 14px 10px;box-shadow:var(--shadow)}
+.chart.span{grid-column:1/-1}
+.chart figcaption{display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin-bottom:10px}
+.chart .ct{font-weight:600;font-size:13.5px}
+.chart .cv{font-size:20px;font-weight:650;font-variant-numeric:tabular-nums}
+.chart .cv small{font-size:11.5px;font-weight:500;color:var(--muted);margin-left:4px}
+.plot{position:relative;height:110px;margin-left:22px}
+.plot .gl{position:absolute;left:0;right:0;border-top:1px solid var(--border);height:0}
+.plot .gl.base{border-top-color:var(--border-strong)}
+.plot .gl i{position:absolute;left:-22px;top:-8px;font-style:normal;font-size:10.5px;color:var(--muted);width:18px;text-align:right;font-variant-numeric:tabular-nums}
+.cols{position:absolute;inset:0;display:flex;align-items:flex-end;gap:2px}
+.col{flex:1;height:100%;display:flex;align-items:flex-end;justify-content:center;gap:2px;cursor:default;border-radius:6px}
+.col:hover,.col:focus-visible{background:color-mix(in srgb,var(--surface-2) 70%,transparent)}
+.bar{width:min(18px,60%);background:var(--series-1);border-radius:4px 4px 0 0;min-height:0}
+.col.pair .bar{width:min(12px,40%)}
+.bar.s2{background:var(--series-2)}
+.col.cur .bar{opacity:.55}
+.xl{display:flex;gap:2px;margin-left:22px;margin-top:6px}
+.xl span{flex:1;text-align:center;font-size:10.5px;color:var(--muted);white-space:nowrap;overflow:hidden}
+.sw{width:10px;height:10px;border-radius:3px;display:inline-block;background:var(--series-1)}
+.sw.s2{background:var(--series-2)}
+table.data{width:100%;border-collapse:collapse;font-size:13px;font-variant-numeric:tabular-nums}
+table.data th,table.data td{padding:7px 8px;border-bottom:1px solid var(--border);text-align:right;white-space:nowrap}
+table.data th:first-child,table.data td:first-child{text-align:left}
+table.data th{color:var(--muted);font-weight:600;font-size:12px}
+.scroll-x{overflow-x:auto;-webkit-overflow-scrolling:touch}
+.insights{list-style:none;margin:0;padding:0}
+.insights li{display:flex;gap:10px;padding:10px 0;border-top:1px solid var(--border)}
+.insights li:first-child{border-top:0;padding-top:0}
+.insights .ix{flex:none;width:22px;height:22px;border-radius:6px;background:var(--accent-soft);display:grid;place-items:center;font-size:12px;font-weight:700;color:var(--text)}
+.insights b{font-weight:600;display:block}
+.insights small{color:var(--muted);font-size:12px}
+#tip{position:fixed;z-index:50;pointer-events:none;background:var(--text);color:var(--bg);font-size:12px;padding:6px 9px;border-radius:7px;max-width:240px;line-height:1.35;box-shadow:0 4px 16px rgba(0,0,0,.18)}
+#toast{position:fixed;left:50%;bottom:calc(20px + env(safe-area-inset-bottom));transform:translateX(-50%) translateY(20px);opacity:0;transition:all .2s;background:var(--text);color:var(--bg);padding:10px 16px;border-radius:10px;font-size:14px;z-index:60;max-width:calc(100% - 32px);pointer-events:none}
+#toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+.summary dd{font-size:15.5px}
+.sum-list{margin:0;padding-left:18px}
+.sum-list li{margin:4px 0}
+hr.sep{border:0;border-top:1px solid var(--border);margin:16px 0}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+@media (forced-colors:active){.bar{border:1px solid CanvasText}.seg button[aria-checked=true]{outline:2px solid Highlight}}
+</style>
+</head>
+<body>
+<header class="top"><div class="top-in">
+  <a class="brand" href="#/home">Presence <span>OS</span></a>
+  <nav class="nav" id="nav" aria-label="Main">
+    <a href="#/home" data-r="home">Home</a>
+    <a href="#/history" data-r="history">History</a>
+    <a href="#/dashboards" data-r="dashboards">Dashboards</a>
+    <a href="#/data" data-r="data">Data</a>
+  </nav>
+</div></header>
+<main id="app" tabindex="-1"></main>
+<div id="tip" role="tooltip" hidden></div>
+<div id="toast" role="status" aria-live="polite"></div>
+
+<script>
+'use strict';
+(function(){
+
+/* =====================================================================
+   U: utilities
+   ===================================================================== */
+const U = {
+  uuid(){
+    if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
+    const b = new Uint8Array(16); (window.crypto||{getRandomValues:a=>a.map(()=>Math.random()*256|0)}).getRandomValues(b);
+    b[6]=(b[6]&15)|64; b[8]=(b[8]&63)|128;
+    const h=[...b].map(x=>x.toString(16).padStart(2,'0')).join('');
+    return `${h.slice(0,8)}-${h.slice(8,12)}-${h.slice(12,16)}-${h.slice(16,20)}-${h.slice(20)}`;
+  },
+  pad:n=>String(n).padStart(2,'0'),
+  iso(d){ return d.getFullYear()+'-'+U.pad(d.getMonth()+1)+'-'+U.pad(d.getDate()); },
+  today(){ return U.iso(new Date()); },
+  parse(s){ const [y,m,d]=s.split('-').map(Number); return new Date(y,m-1,d); },
+  addDays(s,n){ const d=U.parse(s); d.setDate(d.getDate()+n); return U.iso(d); },
+  monday(s){ const d=U.parse(s); d.setDate(d.getDate()-((d.getDay()+6)%7)); return U.iso(d); },
+  fmt(s){ return U.parse(s).toLocaleDateString(undefined,{weekday:'short',day:'numeric',month:'short',year:'numeric'}); },
+  long(s){ return U.parse(s).toLocaleDateString(undefined,{weekday:'long',day:'numeric',month:'long',year:'numeric'}); },
+  short(s){ return U.parse(s).toLocaleDateString(undefined,{day:'numeric',month:'short'}); },
+  esc(v){ return String(v==null?'':v).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); },
+  clone:o=>JSON.parse(JSON.stringify(o)),
+  get(o,p){ return p.split('.').reduce((a,k)=>a==null?undefined:a[k],o); },
+  set(o,p,v){ const ks=p.split('.'); let a=o; for(let i=0;i<ks.length-1;i++){ if(a[ks[i]]==null) a[ks[i]]={}; a=a[ks[i]]; } a[ks[ks.length-1]]=v; },
+  isISO:s=>typeof s==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(s)&&!isNaN(U.parse(s)),
+  isTime:s=>typeof s==='string'&&/^([01]\d|2[0-3]):[0-5]\d$/.test(s),
+  filled:s=>typeof s==='string'&&s.trim().length>0,
+  mean(a){ return a.length ? Math.round(a.reduce((x,y)=>x+y,0)/a.length*10)/10 : null; },
+  num:v=>typeof v==='number'&&isFinite(v),
+  show(v){ return v==null||v==='' ? '—' : (v===true?'Yes':v===false?'No':String(v)); },
+};
+const DAYS=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+
+/* =====================================================================
+   Store: storage layer (localStorage, write-through cache)
+   ===================================================================== */
+const Store = (function(){
+  const K={daily:'presenceos.daily.v1', weekly:'presenceos.weekly.v1', drafts:'presenceos.drafts.v1'};
+  const m={daily:[], weekly:[], drafts:{daily:{},weekly:{}}};
+  function read(k,fb){ try{ const v=localStorage.getItem(k); return v?JSON.parse(v):fb; }catch(e){ return fb; } }
+  function write(k,v){
+    try{ localStorage.setItem(k,JSON.stringify(v)); return true; }
+    catch(e){ toast('Storage unavailable. Changes are kept for this session only; export to keep a copy.'); return false; }
+  }
+  const sortD=()=>m.daily.sort((a,b)=>a.date<b.date?-1:a.date>b.date?1:a.createdAt-b.createdAt);
+  const sortW=()=>m.weekly.sort((a,b)=>a.weekStartDate<b.weekStartDate?-1:a.weekStartDate>b.weekStartDate?1:0);
+  const persist=()=>{ sortD(); sortW(); write(K.daily,m.daily); write(K.weekly,m.weekly); write(K.drafts,m.drafts); };
+  return {
+    init(){
+      m.daily=read(K.daily,[]); m.weekly=read(K.weekly,[]); m.drafts=read(K.drafts,{daily:{},weekly:{}});
+      if(!Array.isArray(m.daily)) m.daily=[]; if(!Array.isArray(m.weekly)) m.weekly=[];
+      if(!m.drafts||typeof m.drafts!=='object') m.drafts={}; m.drafts.daily=m.drafts.daily||{}; m.drafts.weekly=m.drafts.weekly||{};
+      sortD(); sortW();
+    },
+    dailies:()=>m.daily.slice(),
+    weeklies:()=>m.weekly.slice(),
+    getDaily:id=>m.daily.find(e=>e.id===id),
+    getWeekly:id=>m.weekly.find(e=>e.id===id),
+    dailyByDate:d=>m.daily.find(e=>e.date===d),
+    weeklyByWeek:w=>m.weekly.find(e=>e.weekStartDate===w),
+    upsertDaily(e){ const i=m.daily.findIndex(x=>x.id===e.id); if(i>=0) m.daily[i]=e; else m.daily.push(e); sortD(); write(K.daily,m.daily); },
+    removeDaily(id){ m.daily=m.daily.filter(x=>x.id!==id); write(K.daily,m.daily); },
+    upsertWeekly(e){ const i=m.weekly.findIndex(x=>x.id===e.id); if(i>=0) m.weekly[i]=e; else m.weekly.push(e); sortW(); write(K.weekly,m.weekly); },
+    removeWeekly(id){ m.weekly=m.weekly.filter(x=>x.id!==id); write(K.weekly,m.weekly); },
+    drafts:kind=>Object.values(m.drafts[kind]).sort((a,b)=>b.savedAt-a.savedAt),
+    getDraft:(kind,id)=>m.drafts[kind][id],
+    saveDraft(kind,entry,step){ m.drafts[kind][entry.id]={entry:U.clone(entry),step,savedAt:Date.now()}; return write(K.drafts,m.drafts); },
+    removeDraft(kind,id){ delete m.drafts[kind][id]; write(K.drafts,m.drafts); },
+    removeDraftsWhere(kind,fn){ for(const id of Object.keys(m.drafts[kind])) if(fn(m.drafts[kind][id].entry)) delete m.drafts[kind][id]; write(K.drafts,m.drafts); },
+    counts:()=>({daily:m.daily.length, weekly:m.weekly.length, drafts:Object.keys(m.drafts.daily).length+Object.keys(m.drafts.weekly).length}),
+    exportAll(){
+      return { app:'Presence OS', format:1, exportedAt:new Date().toISOString(),
+        dailyEntries:m.daily, weeklyEntries:m.weekly,
+        drafts:{ daily:Object.values(m.drafts.daily), weekly:Object.values(m.drafts.weekly) } };
+    },
+    importAll(data,mode){
+      if(!data||typeof data!=='object') throw new Error('File is not a Presence OS backup.');
+      const inD=Array.isArray(data.dailyEntries)?data.dailyEntries:null, inW=Array.isArray(data.weeklyEntries)?data.weeklyEntries:null;
+      if(!inD&&!inW) throw new Error('No dailyEntries or weeklyEntries found in file.');
+      const okD=e=>e&&typeof e.id==='string'&&U.isISO(e.date)&&(e.dailyMode==='Full'||e.dailyMode==='HardDay')&&U.num(e.createdAt);
+      const okW=e=>e&&typeof e.id==='string'&&U.isISO(e.weekStartDate)&&U.num(e.createdAt)&&e.part1_metricsSnapshot&&typeof e.part1_metricsSnapshot==='object';
+      const d=(inD||[]).filter(okD), w=(inW||[]).filter(okW);
+      const skipped=((inD||[]).length-d.length)+((inW||[]).length-w.length);
+      const dd=data.drafts&&typeof data.drafts==='object'?data.drafts:{};
+      const draftsD=(Array.isArray(dd.daily)?dd.daily:[]).filter(x=>x&&okD(x.entry));
+      const draftsW=(Array.isArray(dd.weekly)?dd.weekly:[]).filter(x=>x&&x.entry&&typeof x.entry.id==='string'&&U.isISO(x.entry.weekStartDate));
+      if(mode==='replace'){ m.daily=[]; m.weekly=[]; m.drafts={daily:{},weekly:{}}; }
+      for(const e of d){ m.daily=m.daily.filter(x=>x.id!==e.id&&x.date!==e.date); m.daily.push(e); }
+      for(const e of w){ m.weekly=m.weekly.filter(x=>x.id!==e.id&&x.weekStartDate!==e.weekStartDate); m.weekly.push(e); }
+      for(const x of draftsD) m.drafts.daily[x.entry.id]={entry:x.entry,step:Number(x.step)||0,savedAt:Number(x.savedAt)||Date.now()};
+      for(const x of draftsW) m.drafts.weekly[x.entry.id]={entry:x.entry,step:Number(x.step)||0,savedAt:Number(x.savedAt)||Date.now()};
+      persist();
+      return {daily:d.length, weekly:w.length, drafts:draftsD.length+draftsW.length, skipped};
+    },
+    reset(){ m.daily=[]; m.weekly=[]; m.drafts={daily:{},weekly:{}}; try{ Object.values(K).forEach(k=>localStorage.removeItem(k)); }catch(e){} },
+  };
+})();
+
+/* =====================================================================
+   Schema: factories + protocol step definitions (exact fields only)
+   Field types: text,time,num,scale,enum,bool,check,date,week,blocks
+   ===================================================================== */
+const ANCHORS=['Walk','Morning Training','None'];
+const NUTRITION=['On Plan','One Deviation','More Than One Deviation'];
+const TRIGGERS=['Fear','Loneliness','Fatigue','Uncertainty','Overload','Other'];
+const CRITICS=['Fear','Shame','Control','Survival','Other'];
+const HOME_TYPES=['Workstation','Closet','Balcony','Other'];
+
+const Schema = {
+  fullDaily(date){
+    return {
+      id:U.uuid(), date, createdAt:Date.now(), dailyMode:'Full',
+      part1_facts:{ wakeTime:'', morningAnchor:null, meditationMinutes:null, nutritionAdherence:null, weedUsed:null, weedFirstUseTime:null, plannedSleepTime:'' },
+      part2_workMetrics:{ deepWorkBlockDone:null, deepWorkBlockDurationMinutes:null, deepWorkTask:null, deepWorkOutputDone:null, deepWorkOutputDescription:null,
+        oneDecisionAdvancedWork:'', avoidedDecision:'', noiseReducedOneThing:'', energyStart:null, energyEnd:null, energyChangeDriver:'' },
+      part3_leadershipVsAutopilot:{ consciousChoiceToday:'', autopilotToday:'', autopilotTriggerType:null, autopilotTriggerDetails:'' },
+      part4_energyConnectionsAliveness:{ gaveEnergy:'', tookEnergy:'', oneMomentAliveness:'' },
+      part5_innerCritic:{ criticQuote:'', criticType:null, criticAppearedWhen:'', tomorrowResponseAction:'' },
+      part6_close:{ keepTomorrowOneThing:'', tomorrowNoNegotiation:'', dayConnectedEnough:false },
+    };
+  },
+  hardDaily(date){
+    return {
+      id:U.uuid(), date, createdAt:Date.now(), dailyMode:'HardDay',
+      part1_facts:null, part2_workMetrics:null, part3_leadershipVsAutopilot:null,
+      part4_energyConnectionsAliveness:null, part5_innerCritic:null, part6_close:null,
+      oneGoodFact:'', autopilotSpot:'', tomorrowNoNegotiation:'',
+    };
+  },
+  weekly(ws){
+    const e={
+      id:U.uuid(), weekStartDate:ws, createdAt:Date.now(),
+      part1_metricsSnapshot:{},
+      part2_trends:{ whatChargedMe:'', whatDrainedMe:'', recurringPattern:'' },
+      part3_uncomfortableTruth:{ uncomfortableTruth:'', whatItDemandsThisWeek:'' },
+      part4_connectionsIdentityLoneliness:{ oneInteractionStrengthenedMe:'', oneInteractionDrainedMe:'', oneBoundaryThisWeek:'', oneNoteIntimacyConnection:'' },
+      part5_homeEnvironment:{ biggestDailyFrictionAtHome:'', oneMoveToReduceFriction:'', oneHomeProjectThisWeekType:null, oneHomeProjectThisWeekDetails:'', timeBlockForHomeProject:'' },
+      part6_nextWeekPlan:{ onePresenceFocus:'', oneBodyFocus:'', oneWorkFocus:'',
+        scheduledDeepWorkBlocks:[0,1,2].map(()=>({day:null,startTime:'',durationMinutes:null,objective:''})),
+        oneAvoidedDecisionToAccept:'', oneProtectionRule:'' },
+      close:{ oneCarryingSentence:'', oneNonScaleSuccessSignal:'' },
+    };
+    Metrics.refreshSnapshot(e);
+    return e;
+  },
+};
+
+const P1='part1_facts.', P2='part2_workMetrics.', P3='part3_leadershipVsAutopilot.', P4='part4_energyConnectionsAliveness.', P5='part5_innerCritic.', P6='part6_close.';
+const deepDone=e=>e.part2_workMetrics&&e.part2_workMetrics.deepWorkBlockDone===true;
+
+const DAILY_STEPS=[
+  {short:'Facts', title:'Part 1 · Facts', fields:[
+    {p:'date', l:'Date', t:'date', r:true},
+    {p:P1+'wakeTime', l:'Wake time', t:'time', r:true},
+    {p:P1+'morningAnchor', l:'Morning anchor', t:'enum', opts:ANCHORS, r:true},
+    {p:P1+'meditationMinutes', l:'Meditation minutes', t:'num', min:0, r:true, h:'0 is a valid answer.'},
+    {p:P1+'nutritionAdherence', l:'Nutrition adherence', t:'enum', opts:NUTRITION, r:true},
+    {p:P1+'weedUsed', l:'Weed used', t:'bool', r:true},
+    {p:P1+'weedFirstUseTime', l:'Weed first use time', t:'time', r:true, when:e=>e.part1_facts.weedUsed===true},
+    {p:P1+'plannedSleepTime', l:'Planned sleep time', t:'time', r:true},
+  ]},
+  {short:'Work', title:'Part 2 · Work metrics', fields:[
+    {p:P2+'deepWorkBlockDone', l:'Deep work block done', t:'bool', r:true},
+    {p:P2+'deepWorkBlockDurationMinutes', l:'Deep work block duration (minutes)', t:'num', min:1, r:true, when:deepDone},
+    {p:P2+'deepWorkTask', l:'Deep work task', t:'text', r:true, when:deepDone},
+    {p:P2+'deepWorkOutputDone', l:'Deep work output done', t:'bool', r:true, when:deepDone},
+    {p:P2+'deepWorkOutputDescription', l:'Deep work output description', t:'text', when:deepDone, nullIfEmpty:true,
+      r:e=>e.part2_workMetrics.deepWorkOutputDone===true},
+    {p:P2+'oneDecisionAdvancedWork', l:'One decision that advanced work', t:'text', r:true, allow:['None']},
+    {p:P2+'avoidedDecision', l:'Avoided decision', t:'text', h:'Optional.'},
+    {p:P2+'noiseReducedOneThing', l:'Noise reduced (one thing)', t:'text', r:true, allow:['None']},
+    {p:P2+'energyStart', l:'Energy at start of day (0–10)', t:'scale', r:true},
+    {p:P2+'energyEnd', l:'Energy at end of day (0–10)', t:'scale', r:true},
+    {p:P2+'energyChangeDriver', l:'Energy change driver', t:'text', r:true, allow:['Unknown']},
+  ]},
+  {short:'Leadership', title:'Part 3 · Leadership vs autopilot', fields:[
+    {p:P3+'consciousChoiceToday', l:'Conscious choice today', t:'text', r:true},
+    {p:P3+'autopilotToday', l:'Autopilot today', t:'text', r:true, allow:['None']},
+    {p:P3+'autopilotTriggerType', l:'Autopilot trigger type', t:'enum', opts:TRIGGERS, r:true},
+    {p:P3+'autopilotTriggerDetails', l:'Autopilot trigger details', t:'text', h:'Optional.'},
+  ]},
+  {short:'Energy', title:'Part 4 · Energy, connections, aliveness', fields:[
+    {p:P4+'gaveEnergy', l:'Gave energy', t:'text', r:true, allow:['None']},
+    {p:P4+'tookEnergy', l:'Took energy', t:'text', r:true, allow:['None']},
+    {p:P4+'oneMomentAliveness', l:'One moment of aliveness', t:'text', r:true, allow:['None']},
+  ]},
+  {short:'Critic', title:'Part 5 · Inner critic', fields:[
+    {p:P5+'criticQuote', l:'Critic quote', t:'text', r:true, allow:['None']},
+    {p:P5+'criticType', l:'Critic type', t:'enum', opts:CRITICS, r:true},
+    {p:P5+'criticAppearedWhen', l:'Critic appeared when', t:'text', r:true, allow:['Unknown']},
+    {p:P5+'tomorrowResponseAction', l:'Tomorrow response action', t:'text', r:true, h:'One small grounding action.'},
+  ]},
+  {short:'Close', title:'Part 6 · Close', fields:[
+    {p:P6+'keepTomorrowOneThing', l:'Keep tomorrow (one thing)', t:'text', r:true},
+    {p:P6+'tomorrowNoNegotiation', l:'Tomorrow non-negotiation', t:'text', r:true},
+    {p:P6+'dayConnectedEnough', l:'Connected enough', t:'check'},
+  ]},
+];
+
+const HARD_STEPS=[
+  {short:'Hard Day', title:'Hard Day', fields:[
+    {p:'date', l:'Date', t:'date', r:true},
+    {p:'oneGoodFact', l:'One good fact', t:'text', r:true},
+    {p:'autopilotSpot', l:'Autopilot spot', t:'text', r:true},
+    {p:'tomorrowNoNegotiation', l:'Tomorrow non-negotiation', t:'text', r:true},
+  ]},
+];
+
+const W1='part1_metricsSnapshot.', W2='part2_trends.', W3='part3_uncomfortableTruth.', W4='part4_connectionsIdentityLoneliness.', W5='part5_homeEnvironment.', W6='part6_nextWeekPlan.', WC='close.';
+/* Weekly required set (kept minimal + consistent): every field shown on the Weekly Summary,
+   plus the three next-week focuses, the 3 deep work blocks, and the carrying sentence. Everything else optional. */
+const WEEKLY_STEPS=[
+  {short:'Metrics', title:'Part 1 · Metrics snapshot', fields:[
+    {p:'weekStartDate', l:'Week starting (Monday)', t:'week', r:true},
+    {p:W1+'keyOutputOfWeek', l:'Key output of the week', t:'text'},
+    {p:W1+'oneRiskReducedOrUntreated', l:'One risk reduced or untreated', t:'text'},
+  ]},
+  {short:'Trends', title:'Part 2 · Trends', fields:[
+    {p:W2+'whatChargedMe', l:'What charged me', t:'text'},
+    {p:W2+'whatDrainedMe', l:'What drained me', t:'text', r:true},
+    {p:W2+'recurringPattern', l:'Recurring pattern', t:'text'},
+  ]},
+  {short:'Truth', title:'Part 3 · Uncomfortable truth', fields:[
+    {p:W3+'uncomfortableTruth', l:'Uncomfortable truth', t:'text'},
+    {p:W3+'whatItDemandsThisWeek', l:'What it demands this week', t:'text'},
+  ]},
+  {short:'Connections', title:'Part 4 · Connections, identity, loneliness', fields:[
+    {p:W4+'oneInteractionStrengthenedMe', l:'One interaction that strengthened me', t:'text'},
+    {p:W4+'oneInteractionDrainedMe', l:'One interaction that drained me', t:'text'},
+    {p:W4+'oneBoundaryThisWeek', l:'One boundary this week', t:'text', r:true},
+    {p:W4+'oneNoteIntimacyConnection', l:'One note on intimacy / connection', t:'text'},
+  ]},
+  {short:'Home', title:'Part 5 · Home environment', fields:[
+    {p:W5+'biggestDailyFrictionAtHome', l:'Biggest daily friction at home', t:'text'},
+    {p:W5+'oneMoveToReduceFriction', l:'One move to reduce friction', t:'text', r:true},
+    {p:W5+'oneHomeProjectThisWeekType', l:'Home project this week: type', t:'enum', opts:HOME_TYPES, r:true},
+    {p:W5+'oneHomeProjectThisWeekDetails', l:'Home project this week: details', t:'text'},
+    {p:W5+'timeBlockForHomeProject', l:'Time block for home project', t:'text', r:true},
+  ]},
+  {short:'Plan', title:'Part 6 · Next week plan', fields:[
+    {p:W6+'onePresenceFocus', l:'One presence focus', t:'text', r:true},
+    {p:W6+'oneBodyFocus', l:'One body focus', t:'text', r:true},
+    {p:W6+'oneWorkFocus', l:'One work focus', t:'text', r:true},
+    {p:W6+'scheduledDeepWorkBlocks', l:'Scheduled deep work blocks (3)', t:'blocks', r:true},
+    {p:W6+'oneAvoidedDecisionToAccept', l:'One avoided decision to accept', t:'text'},
+    {p:W6+'oneProtectionRule', l:'One protection rule', t:'text'},
+  ]},
+  {short:'Close', title:'Close', fields:[
+    {p:WC+'oneCarryingSentence', l:'One carrying sentence', t:'text', r:true},
+    {p:WC+'oneNonScaleSuccessSignal', l:'One non-scale success signal', t:'text'},
+  ]},
+];
+const stepsFor=kind=>kind==='weekly'?WEEKLY_STEPS:kind==='hard'?HARD_STEPS:DAILY_STEPS;
+
+/* =====================================================================
+   Valid: validation layer
+   ===================================================================== */
+const Valid = {
+  active:(f,e)=>!f.when||f.when(e),
+  required:(f,e)=>typeof f.r==='function'?!!f.r(e):!!f.r,
+  blockOk:b=>b&&DAYS.includes(b.day)&&U.isTime(b.startTime)&&U.num(b.durationMinutes)&&b.durationMinutes>0&&U.filled(b.objective),
+  fieldOk(f,e){
+    if(!Valid.active(f,e)||!Valid.required(f,e)) return true;
+    const v=U.get(e,f.p);
+    switch(f.t){
+      case 'text': return U.filled(v);
+      case 'time': return U.isTime(v);
+      case 'num': return U.num(v)&&v>=(f.min||0);
+      case 'scale': return Number.isInteger(v)&&v>=0&&v<=10;
+      case 'enum': return f.opts.includes(v);
+      case 'bool': case 'check': return v===true||v===false;
+      case 'date': case 'week': return U.isISO(v);
+      case 'blocks': return Array.isArray(v)&&v.length===3&&v.every(Valid.blockOk);
+    }
+    return true;
+  },
+  missing(kind,i,e){ return stepsFor(kind)[i].fields.filter(f=>!Valid.fieldOk(f,e)).map(f=>f.l); },
+  stepOk(kind,i,e){ return Valid.missing(kind,i,e).length===0; },
+  allMissing(kind,e){ return stepsFor(kind).flatMap((s,i)=>Valid.missing(kind,i,e)); },
+  complete(kind,e){ return Valid.allMissing(kind,e).length===0; },
+  /* Clean an entry for saving: inactive conditional fields -> null; trim strings. */
+  normalize(kind,e){
+    const x=U.clone(e);
+    for(const s of stepsFor(kind)) for(const f of s.fields){
+      if(f.t==='week'||f.t==='date') continue;
+      if(!Valid.active(f,x)){ U.set(x,f.p,null); continue; }
+      const v=U.get(x,f.p);
+      if(f.t==='text'){ const t=typeof v==='string'?v.trim():''; U.set(x,f.p, (f.nullIfEmpty&&!t)?null:t); }
+      if(f.t==='blocks'&&Array.isArray(v)) v.forEach(b=>{ if(typeof b.objective==='string') b.objective=b.objective.trim(); });
+    }
+    if(kind==='weekly') Metrics.refreshSnapshot(x);
+    return x;
+  },
+};
+
+/* =====================================================================
+   Metrics: weekly computation from completed DailyEntry items
+   ===================================================================== */
+const Metrics = {
+  KEYS:['morningAnchorCount','dailyCompletedCount','hardDayCount','meditationDaysCount','onPlanDaysCount','deviationsCount','weedDaysCount','connectedEnoughDaysCount','deepWorkBlocksCount','outputsCount','avgEnergyStart','avgEnergyEnd'],
+  LABELS:{morningAnchorCount:'Morning anchors',dailyCompletedCount:'Full dailies completed',hardDayCount:'Hard days',meditationDaysCount:'Meditation days',onPlanDaysCount:'On-plan days',deviationsCount:'Deviations',weedDaysCount:'Weed days',connectedEnoughDaysCount:'Connected enough',deepWorkBlocksCount:'Deep work blocks',outputsCount:'Outputs',avgEnergyStart:'Avg energy start',avgEnergyEnd:'Avg energy end'},
+  inWeek(ws,dailies){ const end=U.addDays(ws,6); return dailies.filter(d=>d.date>=ws&&d.date<=end); },
+  compute(ws,dailies){
+    const list=Metrics.inWeek(ws,dailies);
+    const full=list.filter(d=>d.dailyMode==='Full');
+    const p1=full.map(d=>d.part1_facts||{}), p2=full.map(d=>d.part2_workMetrics||{}), p6=full.map(d=>d.part6_close||{});
+    const cnt=(arr,fn)=>arr.filter(fn).length;
+    return {
+      morningAnchorCount:cnt(p1,x=>x.morningAnchor==='Walk'||x.morningAnchor==='Morning Training'),
+      dailyCompletedCount:full.length,
+      hardDayCount:cnt(list,d=>d.dailyMode==='HardDay'),
+      meditationDaysCount:cnt(p1,x=>U.num(x.meditationMinutes)&&x.meditationMinutes>0),
+      onPlanDaysCount:cnt(p1,x=>x.nutritionAdherence==='On Plan'),
+      deviationsCount:cnt(p1,x=>x.nutritionAdherence==='One Deviation'||x.nutritionAdherence==='More Than One Deviation'),
+      weedDaysCount:cnt(p1,x=>x.weedUsed===true),
+      connectedEnoughDaysCount:cnt(p6,x=>x.dayConnectedEnough===true),
+      deepWorkBlocksCount:cnt(p2,x=>x.deepWorkBlockDone===true),
+      outputsCount:cnt(p2,x=>x.deepWorkOutputDone===true),
+      avgEnergyStart:U.mean(p2.map(x=>x.energyStart).filter(U.num)),
+      avgEnergyEnd:U.mean(p2.map(x=>x.energyEnd).filter(U.num)),
+    };
+  },
+  refreshSnapshot(e){
+    const old=e.part1_metricsSnapshot||{};
+    e.part1_metricsSnapshot=Object.assign(Metrics.compute(e.weekStartDate,Store.dailies()),{
+      keyOutputOfWeek:typeof old.keyOutputOfWeek==='string'?old.keyOutputOfWeek:'',
+      oneRiskReducedOrUntreated:typeof old.oneRiskReducedOrUntreated==='string'?old.oneRiskReducedOrUntreated:'',
+    });
+  },
+  weeksBack(n){ const cur=U.monday(U.today()); const a=[]; for(let i=n-1;i>=0;i--) a.push(U.addDays(cur,-7*i)); return a; },
+};
+
+/* =====================================================================
+   Insights: deterministic rules (no AI). Short, neutral.
+   ===================================================================== */
+const Insights = {
+  run(nWeeks){
+    const dailies=Store.dailies(), weeks=Metrics.weeksBack(nWeeks);
+    const ms=weeks.map(ws=>({ws,m:Metrics.compute(ws,dailies)}));
+    const out=[];
+    for(let i=1;i<ms.length;i++){
+      const a=ms[i-1].m, b=ms[i].m, ws=ms[i].ws;
+      if(b.weedDaysCount>a.weedDaysCount&&b.morningAnchorCount<a.morningAnchorCount)
+        out.push({rule:1,date:ws,text:'Morning anchor appears protective; consider restoring it.',
+          meta:`Week of ${U.short(ws)}: weed days ${a.weedDaysCount}→${b.weedDaysCount}, morning anchors ${a.morningAnchorCount}→${b.morningAnchorCount}`});
+      if(b.avgEnergyEnd!=null&&b.avgEnergyEnd<4&&b.deviationsCount>a.deviationsCount)
+        out.push({rule:4,date:ws,text:'Low end-of-day energy correlates with deviations; prioritize sleep/wind-down.',
+          meta:`Week of ${U.short(ws)}: avg energy end ${b.avgEnergyEnd}, deviations ${a.deviationsCount}→${b.deviationsCount}`});
+    }
+    for(const {ws} of ms){
+      const n=Metrics.inWeek(ws,dailies).filter(d=>d.part3_leadershipVsAutopilot&&d.part3_leadershipVsAutopilot.autopilotTriggerType==='Loneliness').length;
+      if(n>=3) out.push({rule:3,date:ws,text:'Loneliness trigger recurring; add one deliberate connection or boundary this week.',meta:`Week of ${U.short(ws)}: ${n} days`});
+    }
+    // Rule 2: 3+ consecutive logged days with no deep work block (Hard Day counts as no block logged).
+    const byDate=new Map(dailies.map(d=>[d.date,d]));
+    const start=weeks[0], end=U.today(); let run=[];
+    const flush=()=>{ if(run.length>=3){ const l=run[run.length-1];
+      out.push({rule:2,date:l,text:'Work execution drifting; schedule one 60–90 min block tomorrow.',meta:`${U.short(run[0])} – ${U.short(l)}: ${run.length} consecutive days without a deep work block`}); } run=[]; };
+    for(let d=start; d<=end; d=U.addDays(d,1)){
+      const e=byDate.get(d);
+      if(e&&!(e.part2_workMetrics&&e.part2_workMetrics.deepWorkBlockDone===true)) run.push(d); else flush();
+    }
+    flush();
+    return out.sort((x,y)=>x.date<y.date?1:x.date>y.date?-1:x.rule-y.rule);
+  },
+};
+
+/* =====================================================================
+   App state + router
+   ===================================================================== */
+let W=null;          // active wizard: {kind:'daily'|'hard'|'weekly', entry, step, origin:'new'|'draft'|'completed', dirty}
+const H={view:'list',from:'',to:'',nutrition:'',weed:'',connected:'',trigger:'',deep:'',q:'',calY:null,calM:null};
+const D={weeks:6,table:false};
+const $app=document.getElementById('app');
+let lastHash='', skipHash=false;
+
+function go(h){ if(location.hash===h) route(); else location.hash=h; }
+function parseHash(){ const parts=(location.hash.replace(/^#\/?/,'')||'home').split('/'); return {name:parts[0]||'home',a:parts[1],b:parts[2]}; }
+function wizardHash(){ return W ? (W.kind==='weekly'?'#/weekly/':'#/daily/')+W.entry.id : ''; }
+
+function onHash(){
+  if(skipHash){ skipHash=false; return; }
+  if(W&&W.dirty&&location.hash!==wizardHash()){
+    if(!confirm('Unsaved changes in this entry. Leave without saving?')){ skipHash=true; location.hash=lastHash; return; }
+    W=null;
+  }
+  route();
+}
+function route(){
+  hideTip();
+  const r=parseHash();
+  lastHash=location.hash;
+  document.querySelectorAll('#nav a').forEach(a=>a.classList.toggle('on',a.dataset.r===r.name));
+  $app.className=(r.name==='dashboards'?'wide':'');
+  if(W&&!((r.name==='daily'||r.name==='weekly')&&r.a===W.entry.id)) W=null;
+  switch(r.name){
+    case 'daily': return openEntry('daily',r.a);
+    case 'weekly': return openEntry('weekly',r.a);
+    case 'summary': return r.a==='weekly'?viewWeeklySummary(r.b):viewDailySummary(r.b);
+    case 'history': return viewHistory();
+    case 'dashboards': return viewDashboards();
+    case 'data': return viewData();
+    default: return viewHome();
+  }
+}
+function render(html){ $app.innerHTML=html; }
+function scrollTop(){ window.scrollTo(0,0); }
+
+/* =====================================================================
+   Toast + tooltip
+   ===================================================================== */
+let toastT;
+function toast(msg){ const t=document.getElementById('toast'); t.textContent=msg; t.classList.add('show'); clearTimeout(toastT); toastT=setTimeout(()=>t.classList.remove('show'),2600); }
+const tip=document.getElementById('tip');
+function showTip(el){
+  tip.textContent=el.dataset.tip; tip.hidden=false;
+  const r=el.getBoundingClientRect(), tw=tip.offsetWidth, th=tip.offsetHeight;
+  let x=r.left+r.width/2-tw/2; x=Math.max(8,Math.min(x,window.innerWidth-tw-8));
+  let y=r.top-th-8; if(y<8) y=r.bottom+8;
+  tip.style.left=x+'px'; tip.style.top=y+'px';
+}
+function hideTip(){ tip.hidden=true; }
+document.addEventListener('pointerover',e=>{ const el=e.target.closest('[data-tip]'); if(el) showTip(el); else hideTip(); });
+document.addEventListener('focusin',e=>{ const el=e.target.closest('[data-tip]'); if(el) showTip(el); else hideTip(); });
+window.addEventListener('scroll',hideTip,{passive:true});
+
+/* =====================================================================
+   Entry lifecycle (start / open / draft / complete / delete)
+   ===================================================================== */
+function startDaily(mode,date){
+  date=date||U.today();
+  const done=Store.dailyByDate(date);
+  if(done){ toast(`${U.fmt(date)} is already logged. Opening it.`); return go('#/daily/'+done.id); }
+  const dr=Store.drafts('daily').find(d=>d.entry.date===date&&d.entry.dailyMode===mode);
+  if(dr){ toast('Resuming saved draft.'); return go('#/daily/'+dr.entry.id); }
+  const e=mode==='HardDay'?Schema.hardDaily(date):Schema.fullDaily(date);
+  W={kind:mode==='HardDay'?'hard':'daily',entry:e,step:0,origin:'new',dirty:false};
+  go('#/daily/'+e.id);
+}
+function startWeekly(ws){
+  ws=U.monday(ws||U.today());
+  const done=Store.weeklyByWeek(ws);
+  if(done){ toast(`Weekly for week of ${U.short(ws)} exists. Opening it.`); return go('#/weekly/'+done.id); }
+  const dr=Store.drafts('weekly').find(d=>d.entry.weekStartDate===ws);
+  if(dr){ toast('Resuming saved draft.'); return go('#/weekly/'+dr.entry.id); }
+  const e=Schema.weekly(ws);
+  W={kind:'weekly',entry:e,step:0,origin:'new',dirty:false};
+  go('#/weekly/'+e.id);
+}
+function openEntry(type,id){
+  if(!(W&&W.entry.id===id)){
+    const kindOf=e=>type==='weekly'?'weekly':(e.dailyMode==='HardDay'?'hard':'daily');
+    const dr=Store.getDraft(type,id);
+    const done=type==='weekly'?Store.getWeekly(id):Store.getDaily(id);
+    if(dr) W={kind:kindOf(dr.entry),entry:U.clone(dr.entry),step:Math.min(dr.step||0,stepsFor(kindOf(dr.entry)).length-1),origin:'draft',dirty:false};
+    else if(done) W={kind:kindOf(done),entry:U.clone(done),step:0,origin:'completed',dirty:false};
+    else { toast('Entry not found.'); return go('#/home'); }
+    if(W.kind==='weekly'){ const before=JSON.stringify(W.entry.part1_metricsSnapshot); Metrics.refreshSnapshot(W.entry); W.recomputed=before!==JSON.stringify(W.entry.part1_metricsSnapshot); }
+  }
+  viewWizard(); scrollTop();
+}
+function saveDraft(){
+  const type=W.kind==='weekly'?'weekly':'daily';
+  if(Store.saveDraft(type,W.entry,W.step)){ W.dirty=false; if(W.origin==='new') W.origin='draft'; toast('Draft saved.'); viewWizard(); }
+}
+function completeEntry(){
+  const kind=W.kind;
+  if(!Valid.complete(kind,W.entry)) return;
+  const e=Valid.normalize(kind,W.entry);
+  if(kind==='weekly'){
+    const clash=Store.weeklyByWeek(e.weekStartDate);
+    if(clash&&clash.id!==e.id){ if(!confirm(`A completed weekly exists for week of ${U.short(e.weekStartDate)}. Replace it?`)) return; Store.removeWeekly(clash.id); }
+    Store.upsertWeekly(e);
+    Store.removeDraftsWhere('weekly',x=>x.id===e.id||x.weekStartDate===e.weekStartDate);
+    W=null; toast('Weekly saved.'); go('#/summary/weekly/'+e.id);
+  } else {
+    const clash=Store.dailyByDate(e.date);
+    if(clash&&clash.id!==e.id){ if(!confirm(`A completed entry exists for ${U.fmt(e.date)}. Replace it?`)) return; Store.removeDaily(clash.id); }
+    Store.upsertDaily(e);
+    Store.removeDraftsWhere('daily',x=>x.id===e.id||x.date===e.date);
+    W=null; toast('Daily saved.'); go('#/summary/daily/'+e.id);
+  }
+}
+function deleteEntry(){
+  const type=W.kind==='weekly'?'weekly':'daily';
+  const what=W.origin==='draft'?'this draft':'this entry';
+  if(!confirm(`Delete ${what}? This cannot be undone.`)) return;
+  if(W.origin==='draft') Store.removeDraft(type,W.entry.id);
+  else if(type==='weekly') Store.removeWeekly(W.entry.id);
+  else Store.removeDaily(W.entry.id);
+  W=null; toast('Deleted.'); go('#/history');
+}
+
+/* =====================================================================
+   Views: field rendering
+   ===================================================================== */
+const esc=U.esc;
+function fid(p){ return 'f_'+p.replace(/\./g,'_'); }
+function segHTML(path,opts,val,type,labels,extraCls){
+  return `<div class="seg ${extraCls||''}" role="radiogroup">${opts.map((o,i)=>{
+    const on=val===o; const sv=typeof o==='boolean'?String(o):o;
+    return `<button type="button" role="radio" aria-checked="${on}" data-pick="${esc(path)}" data-type="${type}" data-value="${esc(sv)}">${esc(labels?labels[i]:o)}</button>`;
+  }).join('')}</div>`;
+}
+function fieldHTML(f,e){
+  if(!Valid.active(f,e)) return '';
+  const v=U.get(e,f.p), req=Valid.required(f,e), id=fid(f.p);
+  const reqMark=req?'<span class="req" title="Required">*</span>':'';
+  const hint=f.h?`<div class="hint">${esc(f.h)}</div>`:'';
+  const labelFor=['text','time','num','date'].includes(f.t);
+  const lab=f.t==='check'?'':(labelFor?`<label class="lbl" for="${id}">${esc(f.l)}${reqMark}</label>`:`<div class="lbl" id="${id}_l">${esc(f.l)}${reqMark}</div>`)+hint;
+  let ctl='';
+  switch(f.t){
+    case 'text':
+      ctl=`<textarea id="${id}" rows="2" data-path="${f.p}" data-type="text">${esc(v)}</textarea>`+
+        (f.allow?`<div class="chips">${f.allow.map(a=>`<button type="button" class="chip" data-fill="${f.p}" data-value="${a}">${a}</button>`).join('')}</div>`:''); break;
+    case 'time': ctl=`<input id="${id}" type="time" value="${esc(v||'')}" data-path="${f.p}" data-type="time">`; break;
+    case 'date': ctl=`<input id="${id}" type="date" value="${esc(v||'')}" max="${U.today()}" data-path="${f.p}" data-type="date">`; break;
+    case 'num': ctl=`<input id="${id}" type="number" inputmode="numeric" min="${f.min||0}" step="1" value="${U.num(v)?v:''}" data-path="${f.p}" data-type="num">`; break;
+    case 'scale': ctl=segHTML(f.p,[0,1,2,3,4,5,6,7,8,9,10],v,'num',null,'scale'); break;
+    case 'enum': ctl=segHTML(f.p,f.opts,v,'enum'); break;
+    case 'bool': ctl=segHTML(f.p,[true,false],v,'bool',['Yes','No']); break;
+    case 'check': ctl=`<label class="check"><input type="checkbox" data-path="${f.p}" data-type="check" ${v?'checked':''}> ${esc(f.l)}</label>`; break;
+    case 'week': ctl=weekPickerHTML(e); break;
+    case 'blocks': ctl=blocksHTML(f.p,v||[]); break;
+  }
+  return `<div class="field" ${labelFor||f.t==='check'?'':`role="group" aria-labelledby="${id}_l"`}>${lab}${ctl}</div>`;
+}
+function weekPickerHTML(e){
+  const ws=e.weekStartDate, m=e.part1_metricsSnapshot, clash=Store.weeklyByWeek(ws);
+  const logs=Metrics.inWeek(ws,Store.dailies()).length;
+  return `<div class="row">
+      <button type="button" class="btn sm" data-action="weekShift" data-d="-7" aria-label="Previous week">‹</button>
+      <input type="date" value="${esc(ws)}" data-change="weekDate" aria-label="Week start date" style="max-width:180px">
+      <button type="button" class="btn sm" data-action="weekShift" data-d="7" aria-label="Next week">›</button>
+    </div>
+    <div class="hint" style="margin-top:6px">Mon ${esc(U.short(ws))} – Sun ${esc(U.short(U.addDays(ws,6)))} · ${logs} completed daily log${logs===1?'':'s'} in this week. Any date snaps to its Monday.</div>
+    ${clash&&clash.id!==e.id?`<div class="note">A completed weekly exists for this week. <a href="#/weekly/${clash.id}">Open it</a> or continue to replace it on completion.</div>`:''}
+    ${W&&W.recomputed?`<div class="note">Metrics recomputed from current daily logs.</div>`:''}
+    <h3 style="margin-top:14px">Auto-computed from daily logs</h3>
+    ${metricTiles(m,Metrics.KEYS)}`;
+}
+function metricTiles(m,keys,big){
+  return `<div class="tiles ${big?'big':''}">${keys.map(k=>`<div class="tile"><b>${esc(U.show(m[k]))}</b><span>${esc(Metrics.LABELS[k])}</span></div>`).join('')}</div>`;
+}
+function blocksHTML(p,arr){
+  return arr.map((b,i)=>{ const bp=`${p}.${i}`;
+    return `<div class="block" role="group" aria-label="Deep work block ${i+1}">
+      <div class="row" style="justify-content:space-between"><strong class="small">Block ${i+1}</strong>${Valid.blockOk(b)?'<span class="badge full">Set</span>':''}</div>
+      <label style="margin-top:8px">Day</label>${segHTML(bp+'.day',DAYS,b.day,'enum')}
+      <div class="grid2">
+        <div><label for="${fid(bp+'.startTime')}">Start time</label><input id="${fid(bp+'.startTime')}" type="time" value="${esc(b.startTime||'')}" data-path="${bp}.startTime" data-type="time"></div>
+        <div><label for="${fid(bp+'.durationMinutes')}">Duration (min)</label><input id="${fid(bp+'.durationMinutes')}" type="number" inputmode="numeric" min="1" step="5" value="${U.num(b.durationMinutes)?b.durationMinutes:''}" data-path="${bp}.durationMinutes" data-type="num"></div>
+      </div>
+      <div style="margin-top:10px"><label for="${fid(bp+'.objective')}">Objective</label><textarea id="${fid(bp+'.objective')}" rows="1" data-path="${bp}.objective" data-type="text">${esc(b.objective)}</textarea></div>
+    </div>`; }).join('');
+}
+
+/* =====================================================================
+   Views: wizard
+   ===================================================================== */
+function viewWizard(){
+  const w=W, steps=stepsFor(w.kind), last=steps.length-1, s=steps[w.step], e=w.entry;
+  const editing=w.origin==='completed';
+  const title=w.kind==='weekly'?'Weekly review':w.kind==='hard'?'Daily · Hard Day':'Daily';
+  const sub=w.kind==='weekly'?`Week of ${U.fmt(e.weekStartDate)}`:(U.isISO(e.date)?U.fmt(e.date):'');
+  const badge=editing?'<span class="badge full">Completed · editing</span>':w.origin==='draft'?'<span class="badge draft">Draft</span>':'<span class="badge">New</span>';
+  const reach=i=>editing||i<=w.step||steps.slice(0,i).every((_,j)=>Valid.stepOk(w.kind,j,e));
+  const tabs=steps.length>1?`<ol class="steps" aria-label="Steps">${steps.map((st,i)=>
+    `<li><button type="button" class="${i===w.step?'cur':''} ${Valid.stepOk(w.kind,i,e)?'ok':''}" data-action="goStep" data-step="${i}" ${reach(i)?'':'disabled'} ${i===w.step?'aria-current="step"':''}><span>${i+1}</span>${esc(st.short)}</button></li>`).join('')}</ol>`:'';
+  render(`
+    <div class="row" style="margin-bottom:2px"><h1>${esc(title)}</h1><span class="spacer"></span>${badge}</div>
+    <p class="sub">${esc(sub)}</p>
+    ${tabs}
+    <section class="card" aria-labelledby="step-title">
+      <h2 id="step-title">${esc(s.title)}</h2>
+      ${s.fields.map(f=>fieldHTML(f,e)).join('')}
+      <p class="muted small" style="margin:0">* required</p>
+    </section>
+    ${w.origin!=='new'?`<div class="row" style="margin:4px 0 8px"><span class="spacer"></span><button type="button" class="btn ghost sm danger" data-action="delete">${w.origin==='draft'?'Delete draft':'Delete entry'}</button></div>`:''}
+    <div class="wiz-foot">
+      <p class="gate" id="gate" aria-live="polite"></p>
+      <div class="row">
+        ${w.step>0?'<button type="button" class="btn" data-action="back">Back</button>':'<a class="btn ghost" href="#/home">Cancel</a>'}
+        <span class="spacer"></span>
+        ${editing?'':'<button type="button" class="btn" data-action="draft">Save draft</button>'}
+        ${w.step<last?'<button type="button" class="btn '+(editing?'':'primary')+'" id="btn-next" data-action="next">Next</button>':''}
+        ${editing?'<button type="button" class="btn primary" id="btn-final" data-action="complete">Save changes</button>'
+          :(w.step===last?`<button type="button" class="btn primary" id="btn-final" data-action="complete">${w.kind==='weekly'?'Complete Weekly':'Complete Daily'}</button>`:'')}
+      </div>
+    </div>`);
+  updateGate();
+}
+function updateGate(){
+  if(!W) return;
+  const steps=stepsFor(W.kind), last=steps.length-1, editing=W.origin==='completed';
+  const miss=Valid.missing(W.kind,W.step,W.entry), all=Valid.allMissing(W.kind,W.entry);
+  const next=document.getElementById('btn-next'), fin=document.getElementById('btn-final'), gate=document.getElementById('gate');
+  if(next) next.disabled=miss.length>0;
+  if(fin) fin.disabled=all.length>0;
+  let msg='';
+  if(miss.length) msg='Required to continue: '+miss.join(', ');
+  else if((W.step===last||editing)&&all.length) msg='Still required in other parts: '+all.join(', ');
+  if(gate) gate.textContent=msg;
+}
+
+/* =====================================================================
+   Views: summaries
+   ===================================================================== */
+function kv(rows){ return `<dl class="kv summary">${rows.map(([k,v])=>`<dt>${esc(k)}</dt><dd>${v}</dd>`).join('')}</dl>`; }
+function viewDailySummary(id){
+  const e=Store.getDaily(id); if(!e){ toast('Entry not found.'); return go('#/home'); }
+  let body;
+  if(e.dailyMode==='HardDay'){
+    body=kv([['Mode','Hard Day'],['One good fact',esc(e.oneGoodFact)],['Autopilot spot',esc(e.autopilotSpot)],['Tomorrow non-negotiation',esc(e.tomorrowNoNegotiation)]]);
+  } else {
+    const p2=e.part2_workMetrics, p3=e.part3_leadershipVsAutopilot, p6=e.part6_close;
+    const work=(p2.deepWorkOutputDone===true&&U.filled(p2.deepWorkOutputDescription))?p2.deepWorkOutputDescription:p2.oneDecisionAdvancedWork;
+    body=kv([
+      ['Connected enough',p6.dayConnectedEnough?'Yes':'No'],
+      ['Key win',esc(p3.consciousChoiceToday)],
+      ['Key risk',esc(p3.autopilotTriggerType)+(U.filled(p3.autopilotTriggerDetails)?` <span class="muted">· ${esc(p3.autopilotTriggerDetails)}</span>`:'')],
+      ['Key work progress',esc(work)],
+      ['Tomorrow non-negotiation',esc(p6.tomorrowNoNegotiation)],
+    ]);
+  }
+  render(`<h1>Daily Summary</h1><p class="sub">${esc(U.fmt(e.date))} · ${e.dailyMode==='HardDay'?'Hard Day':'Full'} · completed</p>
+    <section class="card">${body}</section>
+    <div class="row"><a class="btn primary" href="#/home">Home</a><a class="btn" href="#/daily/${e.id}">Edit</a><a class="btn ghost" href="#/history">History</a></div>`);
+  scrollTop();
+}
+function viewWeeklySummary(id){
+  const e=Store.getWeekly(id); if(!e){ toast('Entry not found.'); return go('#/home'); }
+  const m=e.part1_metricsSnapshot, p5=e.part5_homeEnvironment, blocks=e.part6_nextWeekPlan.scheduledDeepWorkBlocks||[];
+  render(`<h1>Weekly Summary</h1><p class="sub">Week of ${esc(U.fmt(e.weekStartDate))}</p>
+    <section class="card"><h3>Top metrics</h3>${metricTiles(m,['morningAnchorCount','onPlanDaysCount','deepWorkBlocksCount'],true)}</section>
+    <section class="card">${kv([
+      ['Biggest drain',esc(e.part2_trends.whatDrainedMe)],
+      ['One boundary',esc(e.part4_connectionsIdentityLoneliness.oneBoundaryThisWeek)],
+      ['One home action',`${esc(p5.oneMoveToReduceFriction)}<br><span class="muted small">Time block:</span> ${esc(p5.timeBlockForHomeProject)}`],
+    ])}</section>
+    <section class="card"><h3>Next week · scheduled deep work blocks</h3>
+      <ol class="sum-list">${blocks.map(b=>`<li><strong>${esc(b.day)} ${esc(b.startTime)}</strong> · ${esc(b.durationMinutes)} min · ${esc(b.objective)}</li>`).join('')}</ol>
+    </section>
+    <div class="row"><a class="btn primary" href="#/home">Home</a><a class="btn" href="#/weekly/${e.id}">Edit</a><a class="btn ghost" href="#/dashboards">Dashboards</a></div>`);
+  scrollTop();
+}
+
+/* =====================================================================
+   Views: home
+   ===================================================================== */
+function viewHome(){
+  const t=U.today(), done=Store.dailyByDate(t);
+  const draft=!done&&Store.drafts('daily').find(d=>d.entry.date===t);
+  const e=done||(draft&&draft.entry);
+  let status, rows='';
+  if(!e) status='<span class="badge">No daily yet</span>';
+  else {
+    const mode=e.dailyMode==='HardDay'?'Hard Day':'Full';
+    status=done?`<span class="badge full">Completed · ${mode}</span>`:`<span class="badge draft">Draft · ${mode}</span>`;
+    const p1=e.part1_facts, p2=e.part2_workMetrics;
+    const na=e.dailyMode==='HardDay'?'<span class="muted">Not captured in Hard Day mode</span>':null;
+    rows=kv([
+      ['Meditation minutes', na||esc(U.show(p1&&p1.meditationMinutes))],
+      ['Nutrition adherence', na||esc(U.show(p1&&p1.nutritionAdherence))],
+      ['Deep work done', na||esc(U.show(p2&&p2.deepWorkBlockDone))+(p2&&p2.deepWorkBlockDone&&U.num(p2.deepWorkBlockDurationMinutes)?` <span class="muted">· ${p2.deepWorkBlockDurationMinutes} min</span>`:'')],
+      ['Weed used', na||esc(U.show(p1&&p1.weedUsed))+(p1&&p1.weedUsed&&p1.weedFirstUseTime?` <span class="muted">· first use ${esc(p1.weedFirstUseTime)}</span>`:'')],
+    ]);
+  }
+  const ws=U.monday(t), wk=Store.weeklyByWeek(ws), wm=Metrics.compute(ws,Store.dailies());
+  const drafts=[...Store.drafts('daily').map(d=>({...d,type:'daily'})),...Store.drafts('weekly').map(d=>({...d,type:'weekly'}))].sort((a,b)=>b.savedAt-a.savedAt);
+  const ins=Insights.run(2).slice(0,3);
+  render(`
+    <h1>${esc(U.long(t))}</h1><p class="sub">Today</p>
+    <section class="card">
+      <div class="row" style="margin-bottom:${e?'12px':'0'}"><h2 style="margin:0">Today's daily</h2><span class="spacer"></span>${status}</div>
+      ${rows}
+      ${e?`<div class="row" style="margin-top:12px"><a class="btn sm" href="#/${done?'summary/daily':'daily'}/${e.id}">${done?'View summary':'Resume draft'}</a>${done?`<a class="btn sm ghost" href="#/daily/${e.id}">Edit</a>`:''}</div>`:''}
+    </section>
+    <div class="actions" style="margin-bottom:14px">
+      <button type="button" class="btn primary" data-action="newDaily">New Daily</button>
+      <button type="button" class="btn" data-action="newHard">New Daily (Hard Day)</button>
+      <button type="button" class="btn" data-action="newWeekly">New Weekly</button>
+      <a class="btn" href="#/history">History</a>
+      <a class="btn" href="#/dashboards">Dashboards</a>
+      <a class="btn" href="#/data">Export/Import</a>
+    </div>
+    <section class="card">
+      <div class="row" style="margin-bottom:10px"><h2 style="margin:0">This week</h2><span class="muted small">Mon ${esc(U.short(ws))} – Sun ${esc(U.short(U.addDays(ws,6)))}</span><span class="spacer"></span>
+        ${wk?`<a class="badge full" href="#/summary/weekly/${wk.id}" style="text-decoration:none">Weekly done</a>`:'<span class="badge">Weekly open</span>'}</div>
+      ${metricTiles(wm,['dailyCompletedCount','morningAnchorCount','onPlanDaysCount','deepWorkBlocksCount'])}
+    </section>
+    ${drafts.length?`<section class="card"><h2>Drafts</h2><ul class="list">${drafts.map(d=>{
+      const en=d.entry, label=d.type==='weekly'?`Weekly · week of ${U.short(en.weekStartDate)}`:`Daily · ${U.fmt(en.date)} · ${en.dailyMode==='HardDay'?'Hard Day':'Full'}`;
+      return `<li><a class="item" href="#/${d.type}/${en.id}" style="text-decoration:none"><div class="t"><span class="badge draft">Draft</span><strong>${esc(label)}</strong></div><p>Part ${d.step+1} · saved ${esc(new Date(d.savedAt).toLocaleString())}</p></a></li>`;}).join('')}</ul></section>`:''}
+    ${ins.length?`<section class="card"><div class="row" style="margin-bottom:10px"><h2 style="margin:0">Insights</h2><span class="spacer"></span><a class="small" href="#/dashboards">All</a></div>${insightsHTML(ins)}</section>`:''}
+  `);
+}
+function insightsHTML(list){
+  if(!list.length) return '<p class="muted small" style="margin:0">No flags in this range.</p>';
+  return `<ul class="insights">${list.map(i=>`<li><span class="ix" aria-label="Rule ${i.rule}">${i.rule}</span><div><b>${esc(i.text)}</b><small>${esc(i.meta)}</small></div></li>`).join('')}</ul>`;
+}
+
+/* =====================================================================
+   Views: history (list / calendar / weekly) + filters + search
+   ===================================================================== */
+function collectText(o,acc){ acc=acc||[]; if(o==null) return acc;
+  if(typeof o==='string') acc.push(o); else if(Array.isArray(o)) o.forEach(x=>collectText(x,acc));
+  else if(typeof o==='object') for(const k in o){ if(k!=='id') collectText(o[k],acc); }
+  return acc; }
+function hMatch(e){
+  if(H.from&&e.date<H.from) return false;
+  if(H.to&&e.date>H.to) return false;
+  const p1=e.part1_facts||{}, p2=e.part2_workMetrics||{}, p3=e.part3_leadershipVsAutopilot||{}, p6=e.part6_close||{};
+  if(H.nutrition&&p1.nutritionAdherence!==H.nutrition) return false;
+  if(H.weed&&String(p1.weedUsed)!==H.weed) return false;
+  if(H.connected&&String(p6.dayConnectedEnough)!==H.connected) return false;
+  if(H.trigger&&p3.autopilotTriggerType!==H.trigger) return false;
+  if(H.deep&&String(p2.deepWorkBlockDone)!==H.deep) return false;
+  if(H.q&&!collectText(e).join(' \n ').toLowerCase().includes(H.q.toLowerCase())) return false;
+  return true;
+}
+function allDailyItems(){
+  return [...Store.dailies().map(e=>({e,draft:false})),...Store.drafts('daily').map(d=>({e:d.entry,draft:true}))]
+    .sort((a,b)=>a.e.date<b.e.date?1:a.e.date>b.e.date?-1:0);
+}
+function sel(name,label,opts){
+  return `<div><label for="hf_${name}">${label}</label><select id="hf_${name}" data-hf="${name}"><option value="">Any</option>${opts.map(([v,l])=>`<option value="${esc(v)}" ${H[name]===v?'selected':''}>${esc(l)}</option>`).join('')}</select></div>`;
+}
+function viewHistory(){
+  if(H.calY==null){ const d=new Date(); H.calY=d.getFullYear(); H.calM=d.getMonth(); }
+  const yn=[['true','Yes'],['false','No']];
+  render(`
+    <h1>History</h1><p class="sub">Tap an entry to open and edit it.</p>
+    <div class="tabs" role="tablist">
+      ${[['list','List'],['calendar','Calendar'],['weekly','Weekly']].map(([k,l])=>`<button type="button" role="tab" aria-selected="${H.view===k}" data-action="hview" data-v="${k}">${l}</button>`).join('')}
+    </div>
+    <section class="card" aria-label="Filters">
+      <div class="filters">
+        <div class="wide"><label for="hf_q">Search</label><input type="search" id="hf_q" data-hf="q" value="${esc(H.q)}" placeholder="Task, decision, autopilot, critic quote…"></div>
+        <div><label for="hf_from">From</label><input type="date" id="hf_from" data-hf="from" value="${esc(H.from)}"></div>
+        <div><label for="hf_to">To</label><input type="date" id="hf_to" data-hf="to" value="${esc(H.to)}"></div>
+        ${sel('nutrition','Nutrition',NUTRITION.map(x=>[x,x]))}
+        ${sel('weed','Weed used',yn)}
+        ${sel('connected','Connected enough',yn)}
+        ${sel('trigger','Autopilot trigger',TRIGGERS.map(x=>[x,x]))}
+        ${sel('deep','Deep work block',yn)}
+        <div style="display:flex;align-items:flex-end"><button type="button" class="btn sm ghost" data-action="hclear">Clear filters</button></div>
+      </div>
+      <p class="muted small" style="margin:10px 0 0">Field filters apply to Full dailies (Hard Day entries hold no field data). Date range and search apply to all.</p>
+    </section>
+    <div id="hres"></div>`);
+  renderHistoryResults();
+}
+function renderHistoryResults(){
+  const box=document.getElementById('hres'); if(!box) return;
+  if(H.view==='weekly'){
+    const list=[...Store.weeklies().map(e=>({e,draft:false})),...Store.drafts('weekly').map(d=>({e:d.entry,draft:true}))]
+      .filter(({e})=>(!H.from||U.addDays(e.weekStartDate,6)>=H.from)&&(!H.to||e.weekStartDate<=H.to)&&(!H.q||collectText(e).join(' ').toLowerCase().includes(H.q.toLowerCase())))
+      .sort((a,b)=>a.e.weekStartDate<b.e.weekStartDate?1:-1);
+    box.innerHTML=`<p class="muted small">${list.length} weekly entr${list.length===1?'y':'ies'}</p>`+(list.length?`<ul class="list">${list.map(({e,draft})=>{
+      const m=e.part1_metricsSnapshot||{};
+      return `<li><a class="item" href="#/weekly/${e.id}" style="text-decoration:none"><div class="t"><strong>Week of ${esc(U.fmt(e.weekStartDate))}</strong>${draft?'<span class="badge draft">Draft</span>':'<span class="badge full">Completed</span>'}</div>
+        <p>Anchors ${U.show(m.morningAnchorCount)} · On-plan ${U.show(m.onPlanDaysCount)} · Deep work ${U.show(m.deepWorkBlocksCount)}${U.filled(e.part2_trends&&e.part2_trends.whatDrainedMe)?' · Drain: '+esc(e.part2_trends.whatDrainedMe):''}</p></a></li>`;}).join('')}</ul>`:'<div class="card muted">No weekly entries match.</div>');
+    return;
+  }
+  const items=allDailyItems();
+  if(H.view==='calendar'){ box.innerHTML=calendarHTML(items); return; }
+  const list=items.filter(x=>hMatch(x.e));
+  box.innerHTML=`<p class="muted small">${list.length} of ${items.length} daily entr${items.length===1?'y':'ies'}</p>`+(list.length?`<ul class="list">${list.map(({e,draft})=>dailyRow(e,draft)).join('')}</ul>`:'<div class="card muted">No entries match these filters.</div>');
+}
+function dailyRow(e,draft){
+  const hard=e.dailyMode==='HardDay';
+  const p1=e.part1_facts||{}, p2=e.part2_workMetrics||{}, p3=e.part3_leadershipVsAutopilot||{}, p6=e.part6_close||{};
+  const chips=hard?[]:[
+    p1.nutritionAdherence, p1.weedUsed===true?'Weed'+(p1.weedFirstUseTime?' '+p1.weedFirstUseTime:''):p1.weedUsed===false?'No weed':null,
+    p2.deepWorkBlockDone===true?'Deep work':p2.deepWorkBlockDone===false?'No deep work':null,
+    p6.dayConnectedEnough?'Connected enough':null, p3.autopilotTriggerType?'Trigger: '+p3.autopilotTriggerType:null].filter(Boolean);
+  const text=hard?e.oneGoodFact:(p3.consciousChoiceToday||p2.oneDecisionAdvancedWork||'');
+  return `<li><a class="item" href="#/daily/${e.id}" style="text-decoration:none">
+    <div class="t"><strong>${esc(U.fmt(e.date))}</strong>${hard?'<span class="badge">Hard Day</span>':'<span class="badge full">Full</span>'}${draft?'<span class="badge draft">Draft</span>':''}</div>
+    ${chips.length?`<div class="row" style="gap:4px">${chips.map(c=>`<span class="badge">${esc(c)}</span>`).join('')}</div>`:''}
+    ${U.filled(text)?`<p>${esc(text)}</p>`:''}</a></li>`;
+}
+function calendarHTML(items){
+  const y=H.calY, mo=H.calM, first=new Date(y,mo,1), off=(first.getDay()+6)%7, days=new Date(y,mo+1,0).getDate(), today=U.today();
+  const by={}; items.forEach(x=>{ (by[x.e.date]=by[x.e.date]||[]).push(x); });
+  let cells=DAYS.map(d=>`<div class="dow">${d}</div>`).join('')+'<div></div>'.repeat(off);
+  for(let d=1; d<=days; d++){
+    const iso=`${y}-${U.pad(mo+1)}-${U.pad(d)}`, list=by[iso]||[];
+    const done=list.find(x=>!x.draft), dr=list.find(x=>x.draft), pick=done||dr;
+    let mk='';
+    if(done) mk=done.e.dailyMode==='HardDay'?'<span class="h">H</span>':'<span class="dot"></span>';
+    else if(dr) mk='<span class="dot hollow"></span>';
+    const dim=pick&&!hMatch(pick.e);
+    const label=`${U.fmt(iso)}${pick?(' · '+(pick.e.dailyMode==='HardDay'?'Hard Day':'Full')+(pick.draft?' draft':'')):' · no entry'}`;
+    cells+=`<button type="button" class="${iso===today?'today':''} ${dim?'dim':''}" data-action="calDay" data-date="${iso}" ${iso>today&&!pick?'disabled':''} aria-label="${esc(label)}" title="${esc(label)}"><span>${d}</span><span class="mk">${mk}</span></button>`;
+  }
+  const name=first.toLocaleDateString(undefined,{month:'long',year:'numeric'});
+  return `<section class="card">
+    <div class="row" style="margin-bottom:10px"><button type="button" class="btn sm" data-action="calMove" data-d="-1" aria-label="Previous month">‹</button><strong style="flex:1;text-align:center">${esc(name)}</strong><button type="button" class="btn sm" data-action="calMove" data-d="1" aria-label="Next month">›</button></div>
+    <div class="cal">${cells}</div>
+    <div class="legend"><span><span class="dot"></span>Full</span><span><span class="mk"><span class="h" style="border:1.5px solid var(--text-2);border-radius:4px;padding:0 3px;font-size:10px;font-weight:700">H</span></span>Hard Day</span><span><span class="dot hollow"></span>Draft</span><span class="muted">Faded = outside filters · tap an empty past day to log it</span></div>
+  </section>`;
+}
+
+/* =====================================================================
+   Views: dashboards (CSS bar charts, no libraries) + insights
+   ===================================================================== */
+function barChartHTML(title,weeks,vals,max,unit){
+  const cur=U.monday(U.today()), latest=vals[vals.length-1];
+  const grid=[max,Math.round(max/2),0].map(g=>`<div class="gl ${g===0?'base':''}" style="bottom:${g/max*100}%"><i>${g}</i></div>`).join('');
+  const cols=weeks.map((ws,i)=>{ const v=vals[i], h=U.num(v)?Math.max(0,Math.min(1,v/max))*100:0;
+    const tipT=`Week of ${U.short(ws)}${ws===cur?' (in progress)':''}: ${U.num(v)?v+' '+unit:'no data'}`;
+    return `<div class="col ${ws===cur?'cur':''}" tabindex="0" data-tip="${esc(tipT)}" aria-label="${esc(tipT)}">${h>0?`<div class="bar" style="height:${h}%"></div>`:''}</div>`; }).join('');
+  return `<figure class="chart"><figcaption><span class="ct">${esc(title)}</span><span class="cv">${U.show(latest)}<small>this week</small></span></figcaption>
+    <div class="plot">${grid}<div class="cols">${cols}</div></div>
+    <div class="xl" aria-hidden="true">${weeks.map(ws=>`<span>${esc(U.short(ws))}</span>`).join('')}</div></figure>`;
+}
+function energyChartHTML(weeks,ms){
+  const cur=U.monday(U.today()), lm=ms[ms.length-1];
+  const grid=[10,5,0].map(g=>`<div class="gl ${g===0?'base':''}" style="bottom:${g*10}%"><i>${g}</i></div>`).join('');
+  const cols=weeks.map((ws,i)=>{ const a=ms[i].avgEnergyStart, b=ms[i].avgEnergyEnd;
+    const tipT=`Week of ${U.short(ws)}${ws===cur?' (in progress)':''}: start ${U.show(a)}, end ${U.show(b)}`;
+    return `<div class="col pair ${ws===cur?'cur':''}" tabindex="0" data-tip="${esc(tipT)}" aria-label="${esc(tipT)}">${U.num(a)&&a>0?`<div class="bar" style="height:${a*10}%"></div>`:''}${U.num(b)&&b>0?`<div class="bar s2" style="height:${b*10}%"></div>`:''}</div>`; }).join('');
+  return `<figure class="chart span"><figcaption><span class="ct">Avg energy start / end (0–10)</span>
+      <span class="legend" style="margin:0"><span><i class="sw"></i>Start ${U.show(lm.avgEnergyStart)}</span><span><i class="sw s2"></i>End ${U.show(lm.avgEnergyEnd)}</span></span></figcaption>
+    <div class="plot" style="height:130px">${grid}<div class="cols">${cols}</div></div>
+    <div class="xl" aria-hidden="true">${weeks.map(ws=>`<span>${esc(U.short(ws))}</span>`).join('')}</div></figure>`;
+}
+const CHARTS=[['morningAnchorCount','Morning anchors per week','days'],['meditationDaysCount','Meditation days per week','days'],['onPlanDaysCount','On-plan days per week','days'],
+  ['weedDaysCount','Weed days per week','days'],['deepWorkBlocksCount','Deep work blocks per week','blocks'],['outputsCount','Outputs per week','outputs']];
+function viewDashboards(){
+  const weeks=Metrics.weeksBack(D.weeks), dailies=Store.dailies(), ms=weeks.map(ws=>Metrics.compute(ws,dailies));
+  const ins=Insights.run(D.weeks);
+  const tableCols=['dailyCompletedCount','hardDayCount',...CHARTS.map(c=>c[0]),'deviationsCount','connectedEnoughDaysCount','avgEnergyStart','avgEnergyEnd'];
+  render(`
+    <div class="row" style="margin-bottom:4px"><h1>Dashboards</h1><span class="spacer"></span>
+      <div class="tabs" role="tablist" aria-label="Range" style="margin:0">${[4,6,8].map(n=>`<button type="button" role="tab" aria-selected="${D.weeks===n}" data-action="dweeks" data-n="${n}">${n} wk</button>`).join('')}</div></div>
+    <p class="sub">Weekly trends from completed daily logs (Monday start). Current week is in progress and shown lighter.</p>
+    <section class="card"><h2>Insights</h2>${insightsHTML(ins)}</section>
+    <div class="row" style="margin:0 0 10px"><h2 style="margin:0">Trends</h2><span class="spacer"></span><button type="button" class="btn sm" data-action="dtable" aria-pressed="${D.table}">${D.table?'Show charts':'Show table'}</button></div>
+    ${D.table?`<section class="card scroll-x"><table class="data"><thead><tr><th>Week of</th>${tableCols.map(k=>`<th>${esc(Metrics.LABELS[k])}</th>`).join('')}</tr></thead>
+      <tbody>${weeks.map((ws,i)=>`<tr><td>${esc(U.short(ws))}</td>${tableCols.map(k=>`<td>${esc(U.show(ms[i][k]))}</td>`).join('')}</tr>`).join('')}</tbody></table></section>`
+    :`<div class="charts">${CHARTS.map(([k,t,u])=>barChartHTML(t,weeks,ms.map(m=>m[k]),7,u)).join('')}${energyChartHTML(weeks,ms)}</div>`}
+  `);
+}
+
+/* =====================================================================
+   Views: data (export / import / reset)
+   ===================================================================== */
+function viewData(){
+  const c=Store.counts();
+  render(`
+    <h1>Data</h1><p class="sub">Everything stays in this browser. Export to back up or move devices.</p>
+    <section class="card"><h2>Stored</h2>${metricTilesRaw([[c.daily,'Daily entries'],[c.weekly,'Weekly entries'],[c.drafts,'Drafts']])}</section>
+    <section class="card"><h2>Export</h2><p class="muted small" style="margin-top:0">Downloads a JSON file with all entries and drafts.</p>
+      <button type="button" class="btn primary" data-action="export">Export JSON</button></section>
+    <section class="card"><h2>Import</h2>
+      <div class="field"><div class="lbl" id="im_l">Mode</div>
+        <div class="seg" role="radiogroup" aria-labelledby="im_l">
+          <label class="check" style="font-weight:500"><input type="radio" name="immode" value="merge" checked> Merge</label>
+          <label class="check" style="font-weight:500"><input type="radio" name="immode" value="replace"> Replace all</label>
+        </div>
+        <div class="hint" style="margin-top:6px">Merge: same id or same date/week is replaced by the imported entry.</div>
+      </div>
+      <input type="file" id="imfile" accept="application/json,.json" class="sr" data-change="import">
+      <label for="imfile" class="btn">Choose backup file…</label>
+    </section>
+    <section class="card"><h2>Reset</h2><p class="muted small" style="margin-top:0">Deletes all entries and drafts from this browser. Export first if you want a copy.</p>
+      <button type="button" class="btn danger" data-action="reset">Reset all data</button></section>`);
+}
+function metricTilesRaw(pairs){ return `<div class="tiles">${pairs.map(([v,l])=>`<div class="tile"><b>${esc(v)}</b><span>${esc(l)}</span></div>`).join('')}</div>`; }
+function doExport(){
+  const blob=new Blob([JSON.stringify(Store.exportAll(),null,2)],{type:'application/json'});
+  const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=`presence-os-backup-${U.today()}.json`;
+  document.body.appendChild(a); a.click(); setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); },500);
+  toast('Export downloaded.');
+}
+function doImport(file){
+  const mode=(document.querySelector('input[name=immode]:checked')||{}).value||'merge';
+  const rd=new FileReader();
+  rd.onload=()=>{
+    try{
+      const data=JSON.parse(rd.result);
+      if(mode==='replace'&&!confirm('Replace ALL current data with this file?')) return;
+      const r=Store.importAll(data,mode);
+      toast(`Imported ${r.daily} daily, ${r.weekly} weekly, ${r.drafts} drafts${r.skipped?` · ${r.skipped} skipped (invalid)`:''}.`);
+      viewData();
+    }catch(err){ toast('Import stopped: '+(err&&err.message?err.message:'invalid JSON file.')); }
+  };
+  rd.readAsText(file);
+}
+
+/* =====================================================================
+   Event wiring (delegated)
+   ===================================================================== */
+const Actions={
+  newDaily:()=>startDaily('Full'),
+  newHard:()=>startDaily('HardDay'),
+  newWeekly:()=>startWeekly(),
+  next:()=>{ if(Valid.stepOk(W.kind,W.step,W.entry)){ W.step++; viewWizard(); scrollTop(); } },
+  back:()=>{ if(W.step>0){ W.step--; viewWizard(); scrollTop(); } },
+  goStep:el=>{ W.step=Number(el.dataset.step); viewWizard(); scrollTop(); },
+  draft:()=>saveDraft(),
+  complete:()=>completeEntry(),
+  delete:()=>deleteEntry(),
+  weekShift:el=>setWeek(U.addDays(W.entry.weekStartDate,Number(el.dataset.d))),
+  hview:el=>{ H.view=el.dataset.v; viewHistory(); },
+  hclear:()=>{ Object.assign(H,{from:'',to:'',nutrition:'',weed:'',connected:'',trigger:'',deep:'',q:''}); viewHistory(); },
+  calMove:el=>{ H.calM+=Number(el.dataset.d); if(H.calM<0){H.calM=11;H.calY--;} if(H.calM>11){H.calM=0;H.calY++;} renderHistoryResults(); },
+  calDay:el=>{ const d=el.dataset.date, it=allDailyItems().filter(x=>x.e.date===d); const pick=it.find(x=>!x.draft)||it[0];
+    if(pick) go('#/daily/'+pick.e.id); else startDaily('Full',d); },
+  dweeks:el=>{ D.weeks=Number(el.dataset.n); viewDashboards(); },
+  dtable:()=>{ D.table=!D.table; viewDashboards(); },
+  export:()=>doExport(),
+  reset:()=>{ if(!confirm('Delete ALL Presence OS data in this browser?')) return;
+    const t=prompt('Type RESET to confirm.'); if(t!=='RESET'){ toast('Reset cancelled.'); return; }
+    Store.reset(); W=null; toast('All data deleted.'); viewData(); },
+};
+function setWeek(iso){
+  if(!U.isISO(iso)) return;
+  W.entry.weekStartDate=U.monday(iso); W.recomputed=false; Metrics.refreshSnapshot(W.entry); W.dirty=true; viewWizard();
+}
+$app.addEventListener('click',ev=>{
+  const pick=ev.target.closest('[data-pick]');
+  if(pick&&W){
+    const t=pick.dataset.type; let v=pick.dataset.value;
+    if(t==='bool') v=v==='true'; else if(t==='num') v=Number(v);
+    U.set(W.entry,pick.dataset.pick,v); W.dirty=true;
+    const y=window.scrollY; viewWizard(); window.scrollTo(0,y);
+    const again=$app.querySelector(`[data-pick="${CSS.escape(pick.dataset.pick)}"][data-value="${CSS.escape(pick.dataset.value)}"]`); if(again) again.focus({preventScroll:true});
+    return;
+  }
+  const fill=ev.target.closest('[data-fill]');
+  if(fill&&W){
+    U.set(W.entry,fill.dataset.fill,fill.dataset.value); W.dirty=true;
+    const ta=document.getElementById(fid(fill.dataset.fill)); if(ta) ta.value=fill.dataset.value;
+    updateGate(); return;
+  }
+  const act=ev.target.closest('[data-action]');
+  if(act&&Actions[act.dataset.action]&&!act.disabled){ Actions[act.dataset.action](act,ev); }
+});
+$app.addEventListener('input',ev=>{
+  const el=ev.target;
+  if(el.dataset.path&&W){
+    const t=el.dataset.type; let v;
+    if(t==='num') v=el.value===''?null:Number(el.value);
+    else if(t==='check') v=el.checked;
+    else v=el.value;
+    U.set(W.entry,el.dataset.path,v); W.dirty=true;
+    if(t==='check'||t==='date'){ if(W.kind!=='weekly'&&el.dataset.path==='date'){ const sub=$app.querySelector('.sub'); if(sub&&U.isISO(v)) sub.textContent=U.fmt(v); } }
+    updateGate(); return;
+  }
+  if(el.dataset.hf){ H[el.dataset.hf]=el.value; renderHistoryResults(); }
+});
+$app.addEventListener('change',ev=>{
+  const el=ev.target;
+  if(el.dataset.change==='weekDate'&&W) return setWeek(el.value);
+  if(el.dataset.change==='import'&&el.files&&el.files[0]){ doImport(el.files[0]); el.value=''; }
+});
+window.addEventListener('hashchange',onHash);
+window.addEventListener('beforeunload',e=>{ if(W&&W.dirty){ e.preventDefault(); e.returnValue=''; } });
+
+/* boot */
+Store.init();
+route();
+})();
+</script>
+</body>
+</html>
